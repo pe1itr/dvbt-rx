@@ -1,0 +1,1 @@
+/usr/bin/cc -Wl,--dependency-file=CMakeFiles/rbdvbt_status_watch.dir/link.d CMakeFiles/rbdvbt_status_watch.dir/tools/rbdvbt_status_watch.c.o -o rbdvbt_status_watch

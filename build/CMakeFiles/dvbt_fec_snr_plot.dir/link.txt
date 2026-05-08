@@ -1,0 +1,1 @@
+/usr/bin/cc -Wl,--dependency-file=CMakeFiles/dvbt_fec_snr_plot.dir/link.d CMakeFiles/dvbt_fec_snr_plot.dir/tools/dvbt_fec_snr_plot.c.o -o dvbt_fec_snr_plot  -lm
