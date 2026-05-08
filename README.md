@@ -232,6 +232,57 @@ Als `GI 1/8` geen duidelijke verbetering geeft in lockduur of packet-error
 bursts, is de hoofdoorzaak waarschijnlijk fading/timing en niet echo-delay.
 Verlaag dan de symbolrate of gebruik sterkere FEC.
 
+### DVB-T versus DVB-S/S2
+
+Voor terrestriale verbindingen wordt vaak aangenomen dat DVB-T automatisch de
+beste keuze is. Dat is niet altijd zo. DVB-T is ontworpen om met multipath om
+te gaan, maar die robuustheid kost tijd, overhead en complexiteit in de
+ontvanger.
+
+Voor contestgebruik moet je onderscheid maken tussen:
+
+- **demod lock:** de ontvanger heeft timing, carrier/fase, pilots, FEC en TS
+  voldoende stabiel.
+- **beeld lock:** de speler heeft PAT/PMT, codec-informatie en een bruikbaar
+  keyframe ontvangen.
+
+In de praktijk voelt DVB-S of DVB-S2 vaak sneller aan. Dat komt doordat het
+single-carrier systemen zijn met een kortere acquisition path. DVB-T moet eerst
+OFDM-symbol timing, FFT-positionering, pilot-lock, deinterleaving en FEC stabiel
+krijgen. Daarna moet de MPEG-TS speler nog wachten op PAT/PMT, SPS/PPS en een
+IDR/keyframe.
+
+Ruwe orde-grootte:
+
+| Systeem | Demod lock | Zichtbaar beeld | Opmerking |
+|---|---:|---:|---|
+| DVB-S | vaak `<0.5 s` | `0.5-2 s` | Snelle QPSK single-carrier lock. |
+| DVB-S2 | `0.5-1.5 s` | `1-3 s` | PL-frame sync en modernere FEC, maar meestal nog snel. |
+| RB-DVB-T | `0.5-2.5 s` | `1.5-6 s` | OFDM timing, pilots, interleaving en lagere netto bitrate. |
+
+De keuze is daarom afhankelijk van het dominante probleem:
+
+| Probleem | Vaak betere keuze | Reden |
+|---|---|---|
+| Kort maar schoon signaalmoment | DVB-S/S2 | Snellere lock en sneller zichtbaar beeld. |
+| Echo-delay of duidelijke multipath | DVB-T | Guard interval kan delayed paden opvangen. |
+| Moment/fading dominant | Geen automatische winnaar | Lagere SR/FEC helpt, maar locktijd en GOP-lengte blijven belangrijk. |
+| Veel C/N marge en contesttempo telt | DVB-S/S2 | Minder overhead en sneller zappen/locken. |
+| Multipath blokkeert single-carrier decode | DVB-T | OFDM kan dan juist voordeel geven. |
+
+Praktische regel:
+
+```text
+DVB-S/S2 is meestal sneller tot beeld.
+DVB-T is vooral interessant wanneer multipath/echo-delay de beperkende factor is.
+```
+
+Voor aircraft scatter betekent dit dat DVB-T niet automatisch beter is omdat de
+verbinding terrestriaal is. Als het bruikbare reflectiemoment kort is, kan de
+extra DVB-T locktijd en lagere netto bitrate juist nadelig zijn. Als het
+probleem echo-delay of multipath is, kan DVB-T met een passende guard interval
+wel duidelijk voordeel geven.
+
 ## Decoder Performance
 
 De performancegrafieken zijn Monte Carlo simulaties van de inner FEC-keten:
