@@ -910,6 +910,141 @@ void rbdvbt_status_publish_idle(const rbdvbt_status_context_t *status,
     status_write_json(status, &validator, 0, 0, 0, 0, 0, stage, input_samples);
 }
 
+static uint32_t outer_quality_score(const ts_validator_t *v,
+                                    uint32_t rs_uncorrectable,
+                                    uint32_t rs_corrected,
+                                    uint32_t written_packets)
+{
+    uint32_t errors = rs_uncorrectable + v->sync_bad + v->transport_errors + v->cc_errors;
+    uint32_t score = 0;
+
+    if (written_packets == 0u) {
+        return 0;
+    }
+
+    score += written_packets;
+    score += v->pat_packets * 10000u;
+    score += v->pmt_packets * 10000u;
+    score += v->sdt_packets * 1000u;
+    score += rs_corrected * 10u;
+    if (v->video_pid != 0x1fffu) {
+        score += 5000u;
+    }
+    if (v->audio_pid != 0x1fffu) {
+        score += 1000u;
+    }
+
+    if (errors * 100u >= score) {
+        return 0;
+    }
+    return score - errors * 100u;
+}
+
+int rbdvbt_outer_analyze_inner(const uint8_t *inner,
+                               size_t inner_count,
+                               rbdvbt_outer_metrics_t *metrics)
+{
+    uint8_t scramble[SCRAMBLE_SEQ_LEN];
+    outer_candidate_t best;
+    uint8_t *best_deint = NULL;
+    size_t best_deint_count = 0;
+    uint32_t written = 0;
+    uint32_t rs_bad = 0;
+    uint32_t rs_corrected = 0;
+    uint32_t rs_corrected_bytes = 0;
+    uint32_t rs_uncorrectable = 0;
+    ts_validator_t validator;
+    int rc = -1;
+
+    if (metrics == NULL) {
+        return -1;
+    }
+    memset(metrics, 0, sizeof(*metrics));
+    memset(&best, 0, sizeof(best));
+    ts_validator_init(&validator);
+    build_scrambler_table(scramble);
+
+    for (uint32_t deint_phase = 0; deint_phase < OUTER_I; ++deint_phase) {
+        size_t deint_count = 0;
+        uint8_t *deint = outer_deinterleave_phase(inner, inner_count, deint_phase, &deint_count);
+
+        if (deint == NULL) {
+            continue;
+        }
+
+        for (uint32_t rs_phase = 0; rs_phase < RS_BLOCK_LEN; ++rs_phase) {
+            for (uint32_t block_phase = 0; block_phase < 8u; ++block_phase) {
+                outer_candidate_t c = score_candidate(deint,
+                                                      deint_count,
+                                                      deint_phase,
+                                                      rs_phase,
+                                                      block_phase);
+
+                if (c.score > best.score) {
+                    best = c;
+                }
+            }
+        }
+
+        free(deint);
+    }
+
+    if (best.blocks == 0u) {
+        goto done;
+    }
+
+    best_deint = outer_deinterleave_phase(inner, inner_count, best.deint_phase, &best_deint_count);
+    if (best_deint == NULL) {
+        goto done;
+    }
+
+    {
+        size_t offset = OUTER_TRANSIENT + best.rs_phase;
+        uint32_t blocks = (uint32_t)((best_deint_count - offset) / RS_BLOCK_LEN);
+
+        for (uint32_t b = 0; b < blocks; ++b) {
+            const uint8_t *block = &best_deint[offset + (size_t)b * RS_BLOCK_LEN];
+            uint32_t phase = (best.block_phase + b) & 7u;
+            uint8_t corrected[RS_BLOCK_LEN];
+            uint8_t ts[RS_DATA_LEN];
+            int correction_result;
+
+            memcpy(corrected, block, sizeof(corrected));
+            correction_result = rs_correct_204(corrected);
+            if (correction_result < 0) {
+                rs_bad++;
+                rs_uncorrectable++;
+            } else {
+                if (correction_result > 0) {
+                    rs_corrected++;
+                    rs_corrected_bytes += (uint32_t)correction_result;
+                }
+            }
+            descramble_packet(corrected, phase, scramble, ts);
+            ts_validator_observe(&validator, ts);
+            written++;
+        }
+    }
+
+    metrics->packets = validator.packets;
+    metrics->sync_bad = validator.sync_bad;
+    metrics->transport_errors = validator.transport_errors;
+    metrics->cc_errors = validator.cc_errors;
+    metrics->pat_packets = validator.pat_packets;
+    metrics->pmt_packets = validator.pmt_packets;
+    metrics->sdt_packets = validator.sdt_packets;
+    metrics->rs_bad = rs_bad;
+    metrics->rs_corrected = rs_corrected;
+    metrics->rs_corrected_bytes = rs_corrected_bytes;
+    metrics->rs_uncorrectable = rs_uncorrectable;
+    metrics->score = outer_quality_score(&validator, rs_uncorrectable, rs_corrected, written);
+    rc = 0;
+
+done:
+    free(best_deint);
+    return rc;
+}
+
 int rbdvbt_outer_recover_ts(const uint8_t *inner,
                             size_t inner_count,
                             const char *ts_path,

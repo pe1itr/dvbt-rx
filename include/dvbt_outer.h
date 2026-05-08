@@ -20,9 +20,28 @@ typedef struct {
     uint32_t ssi;
 } rbdvbt_status_context_t;
 
+typedef struct {
+    uint32_t packets;
+    uint32_t sync_bad;
+    uint32_t transport_errors;
+    uint32_t cc_errors;
+    uint32_t pat_packets;
+    uint32_t pmt_packets;
+    uint32_t sdt_packets;
+    uint32_t rs_bad;
+    uint32_t rs_corrected;
+    uint32_t rs_corrected_bytes;
+    uint32_t rs_uncorrectable;
+    uint32_t score;
+} rbdvbt_outer_metrics_t;
+
 void rbdvbt_status_publish_idle(const rbdvbt_status_context_t *status,
                                 const char *stage,
                                 uint64_t input_samples);
+
+int rbdvbt_outer_analyze_inner(const uint8_t *inner,
+                               size_t inner_count,
+                               rbdvbt_outer_metrics_t *metrics);
 
 int rbdvbt_outer_recover_ts(const uint8_t *inner,
                             size_t inner_count,

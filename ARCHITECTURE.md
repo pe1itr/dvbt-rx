@@ -60,6 +60,7 @@ stdin IQ
   -> input parser en IQ-statistiek
   -> DC removal
   -> optionele resampling naar DVB-T grid
+  -> optionele guard auto-detectie via CP-correlatie
   -> cyclic-prefix timing
   -> veilige FFT-start binnen CP plateau
   -> 2048 FFT
@@ -69,6 +70,7 @@ stdin IQ
   -> equalized QPSK punten
   -> QPSK soft demap
   -> DVB-T bit deinterleaving
+  -> optionele FEC auto-detectie via Viterbi + outer TS score
   -> depuncturing voor FEC 1/2, 2/3, 3/4, 5/6, 7/8
   -> soft Viterbi
   -> outer byte deinterleaver
@@ -81,6 +83,27 @@ stdin IQ
 De naam `--probe-constellation` is historisch gegroeid. In de huidige code is
 dit niet meer alleen een probe; het is de route waarin de volledige werkende
 demodulatieketen zit.
+
+## Automatische Parameterdetectie
+
+`--gi auto` gebruikt een praktische CP-correlatiescan. De receiver vergelijkt
+`1/32`, `1/16` en `1/8` op de actuele sample-grid, dus na eventuele resampling.
+De selectie begint bij de kortste guard en kiest alleen een langere guard als de
+CP-score duidelijk beter is. Dit voorkomt dat `1/8` onterecht wint alleen omdat
+er meer CP-samples in de correlatie zitten.
+
+`--fec auto` probeert de ondersteunde puncturing rates en decodeert per kandidaat
+de Viterbi-output. Wanneer TS-output actief is, wordt de kandidaat gekozen op de
+outer receiver score:
+
+- Reed-Solomon resultaat
+- TS sync
+- PAT/PMT aanwezigheid
+- SDT/service-info
+- continuity counters
+
+Dit is bewust een praktische detectie. De DVB-T standaard draagt GI/FEC ook in
+TPS-carriers, maar TPS-decode is nog niet de gebruikte detectieroute.
 
 ## Transport Stream
 

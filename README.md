@@ -73,8 +73,8 @@ Voor een IQ-bestand met interleaved signed 16-bit IQ:
   --input-format s16 \
   --sample-rate 1010526 \
   --sr 333k \
-  --gi 1/32 \
-  --fec 2/3 \
+  --gi auto \
+  --fec auto \
   --stdout-ts \
   < recordings/dvbt-333k-g32-20260322.iq | ffplay -
 ```
@@ -138,8 +138,8 @@ Status bekijken in een tweede terminal:
 | Parameter | Keuzes | Betekenis |
 |---|---|---|
 | `--sr` | `125k`, `250k`, `333k`, `500k` | DVB-T symbolrate preset. |
-| `--gi` | `1/8`, `1/16`, `1/32` | Guard interval. |
-| `--fec` | `1/2`, `2/3`, `3/4`, `5/6`, `7/8` | Inner FEC puncturing rate. |
+| `--gi` | `auto`, `1/8`, `1/16`, `1/32` | Guard interval. `auto` kiest via cyclic-prefix correlatie. |
+| `--fec` | `auto`, `1/2`, `2/3`, `3/4`, `5/6`, `7/8` | Inner FEC puncturing rate. `auto` kiest via Viterbi + outer TS score. |
 | `--dvbt-ir` | `1`, `2`, `4`, `8` | Interpolation/rate factor voor de DVB-T sample grid. |
 | `--resample-to-dvbt-rate` | vlag | Resample naar de verwachte DVB-T 2K grid. |
 
@@ -157,6 +157,19 @@ Status bekijken in een tweede terminal:
 | `--status-period-packets N` | Statusupdate elke `N` TS packets; tijdens input elke `N * 4096` IQ samples. |
 
 ## Parameterkeuze
+
+### Automatische Detectie
+
+Gebruik `--gi auto` wanneer de guard interval van de opname niet zeker is. De
+receiver probeert `1/32`, `1/16` en `1/8`, meet de cyclic-prefix correlatie en
+kiest de kortste guard die een duidelijke lock geeft. Dit is een praktische
+detectie op basis van de ontvangen samples; het is nog geen TPS-decode.
+
+Gebruik `--fec auto` wanneer de code rate niet zeker is. De receiver probeert de
+FEC-kandidaten, draait Viterbi en beoordeelt daarna de outer keten op
+Reed-Solomon resultaat, TS sync, PAT/PMT en continuity counters. Zodra er
+MPEG-TS output wordt gevraagd, is deze score betrouwbaarder dan alleen een
+Viterbi-metric.
 
 ### Symbolrate
 

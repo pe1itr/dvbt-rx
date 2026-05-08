@@ -16,12 +16,14 @@ typedef enum {
 } rbdvbt_symbol_rate_t;
 
 typedef enum {
+    RBDVBT_GI_AUTO = -1,
     RBDVBT_GI_1_8,
     RBDVBT_GI_1_16,
     RBDVBT_GI_1_32
 } rbdvbt_guard_interval_t;
 
 typedef enum {
+    RBDVBT_FEC_AUTO = -1,
     RBDVBT_FEC_1_2,
     RBDVBT_FEC_2_3,
     RBDVBT_FEC_3_4,

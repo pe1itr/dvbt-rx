@@ -65,6 +65,8 @@ static complexf_t c_rotate(complexf_t a, double phase)
 static uint32_t guard_samples(uint32_t fft_size, rbdvbt_guard_interval_t gi)
 {
     switch (gi) {
+    case RBDVBT_GI_AUTO:
+        return 0;
     case RBDVBT_GI_1_8:
         return fft_size / 8u;
     case RBDVBT_GI_1_16:
@@ -74,6 +76,80 @@ static uint32_t guard_samples(uint32_t fft_size, rbdvbt_guard_interval_t gi)
     }
 
     return 0;
+}
+
+static uint32_t find_symbol_start(const complexf_t *samples,
+                                  size_t count,
+                                  uint32_t fft_size,
+                                  uint32_t gi_len,
+                                  uint32_t symbol_len,
+                                  uint32_t max_symbols,
+                                  double *out_score,
+                                  complexf_t *out_corr);
+
+static rbdvbt_guard_interval_t select_guard_interval_auto(const rbdvbt_config_t *cfg,
+                                                          const complexf_t *samples,
+                                                          size_t count,
+                                                          uint32_t fft_size)
+{
+    static const rbdvbt_guard_interval_t candidates[] = {
+        RBDVBT_GI_1_32,
+        RBDVBT_GI_1_16,
+        RBDVBT_GI_1_8
+    };
+    rbdvbt_guard_interval_t best_gi = RBDVBT_GI_1_32;
+    double best_score = -1.0;
+    uint32_t best_start = 0;
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        uint32_t gi_len = guard_samples(fft_size, candidates[i]);
+        uint32_t symbol_len = fft_size + gi_len;
+        uint32_t scan_symbols = cfg->probe_symbols > 200u ? 200u : cfg->probe_symbols;
+        complexf_t corr = {0.0f, 0.0f};
+        double score = 0.0;
+        uint32_t start;
+
+        if (gi_len == 0 || count < (size_t)symbol_len * 4u) {
+            continue;
+        }
+        if ((size_t)scan_symbols * symbol_len > count) {
+            scan_symbols = (uint32_t)(count / symbol_len);
+        }
+        if (scan_symbols == 0u) {
+            continue;
+        }
+
+        start = find_symbol_start(samples,
+                                  count,
+                                  fft_size,
+                                  gi_len,
+                                  symbol_len,
+                                  scan_symbols,
+                                  &score,
+                                  &corr);
+
+        fprintf(stderr,
+                "[auto-gi] candidate=%s gi_samples=%u symbol_samples=%u start=%u cp_score=%.5f\n",
+                rbdvbt_guard_interval_name(candidates[i]),
+                gi_len,
+                symbol_len,
+                start,
+                score);
+
+        if (best_score < 0.0 || score > best_score * 1.02) {
+            best_score = score;
+            best_gi = candidates[i];
+            best_start = start;
+        }
+    }
+
+    fprintf(stderr,
+            "[auto-gi] selected=%s start=%u cp_score=%.5f\n",
+            rbdvbt_guard_interval_name(best_gi),
+            best_start,
+            best_score);
+
+    return best_gi;
 }
 
 static void init_status_context_from_config(const rbdvbt_config_t *cfg,
@@ -2633,6 +2709,9 @@ static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
     size_t o = 0;
 
     switch (fec) {
+    case RBDVBT_FEC_AUTO:
+        *out_pairs = NULL;
+        return 0;
     case RBDVBT_FEC_1_2:
         group_in = 1;
         group_out = 1;
@@ -2667,6 +2746,8 @@ static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
         const qpsk_dibit_t *t = &dibits[i * group_in];
 
         switch (fec) {
+        case RBDVBT_FEC_AUTO:
+            break;
         case RBDVBT_FEC_1_2:
             depuncture_pair_set(&pairs[o++], 1, t[0].dibit & 1u, t[0].x_cost, 1, (t[0].dibit >> 1) & 1u, t[0].y_cost);
             break;
@@ -2787,12 +2868,13 @@ static int dvbt_viterbi_decode_pairs(const viterbi_pair_t *pairs,
     return 0;
 }
 
-static int write_viterbi_output(rbdvbt_fec_t fec,
+static int decode_viterbi_bytes(rbdvbt_fec_t fec,
                                 const qpsk_dibit_t *dibits,
                                 size_t dibit_count,
-                                const char *path,
-                                const char *ts_path,
-                                const rbdvbt_status_context_t *status)
+                                uint8_t **out_bytes,
+                                size_t *out_byte_count,
+                                size_t *out_pair_count,
+                                double *out_best_metric)
 {
     viterbi_pair_t *pairs = NULL;
     uint8_t *bits = NULL;
@@ -2801,8 +2883,16 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
     size_t bit_count = 0;
     size_t byte_count;
     double best_metric = 0.0;
-    FILE *f = NULL;
     int rc = -1;
+
+    *out_bytes = NULL;
+    *out_byte_count = 0;
+    if (out_pair_count != NULL) {
+        *out_pair_count = 0;
+    }
+    if (out_best_metric != NULL) {
+        *out_best_metric = 0.0;
+    }
 
     pair_count = dvbt_depuncture_dibits(fec, dibits, dibit_count, &pairs);
     if (pair_count == 0 || pairs == NULL) {
@@ -2831,6 +2921,37 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
         bytes[i] = b;
     }
 
+    *out_bytes = bytes;
+    *out_byte_count = byte_count;
+    if (out_pair_count != NULL) {
+        *out_pair_count = pair_count;
+    }
+    if (out_best_metric != NULL) {
+        *out_best_metric = best_metric;
+    }
+    bytes = NULL;
+    rc = 0;
+
+done:
+    free(pairs);
+    free(bits);
+    free(bytes);
+    return rc;
+}
+
+static int write_selected_viterbi_output(rbdvbt_fec_t fec,
+                                         const uint8_t *bytes,
+                                         size_t byte_count,
+                                         size_t dibit_count,
+                                         size_t pair_count,
+                                         double best_metric,
+                                         const char *path,
+                                         const char *ts_path,
+                                         const rbdvbt_status_context_t *status)
+{
+    FILE *f = NULL;
+    int rc = -1;
+
     if (path != NULL) {
         f = fopen(path, "wb");
         if (f == NULL) {
@@ -2848,7 +2969,7 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
             rbdvbt_fec_name(fec),
             dibit_count,
             pair_count,
-            bit_count,
+            byte_count * 8u,
             byte_count,
             best_metric,
             path != NULL ? path : "-");
@@ -2865,10 +2986,149 @@ done:
     if (f != NULL) {
         fclose(f);
     }
-    free(pairs);
-    free(bits);
-    free(bytes);
     return rc;
+}
+
+static int write_viterbi_output(rbdvbt_fec_t fec,
+                                const qpsk_dibit_t *dibits,
+                                size_t dibit_count,
+                                const char *path,
+                                const char *ts_path,
+                                const rbdvbt_status_context_t *status)
+{
+    static const rbdvbt_fec_t fec_candidates[] = {
+        RBDVBT_FEC_1_2,
+        RBDVBT_FEC_2_3,
+        RBDVBT_FEC_3_4,
+        RBDVBT_FEC_5_6,
+        RBDVBT_FEC_7_8
+    };
+    uint8_t *bytes = NULL;
+    size_t byte_count = 0;
+    size_t pair_count = 0;
+    double best_metric = 0.0;
+
+    if (fec != RBDVBT_FEC_AUTO) {
+        if (decode_viterbi_bytes(fec, dibits, dibit_count, &bytes, &byte_count, &pair_count, &best_metric) != 0) {
+            return -1;
+        }
+        {
+            int rc = write_selected_viterbi_output(fec,
+                                                   bytes,
+                                                   byte_count,
+                                                   dibit_count,
+                                                   pair_count,
+                                                   best_metric,
+                                                   path,
+                                                   ts_path,
+                                                   status);
+            free(bytes);
+            return rc;
+        }
+    }
+
+    {
+        rbdvbt_fec_t selected_fec = RBDVBT_FEC_1_2;
+        uint8_t *selected_bytes = NULL;
+        size_t selected_byte_count = 0;
+        size_t selected_pair_count = 0;
+        double selected_metric = 0.0;
+        uint32_t selected_score = 0;
+
+        for (size_t i = 0; i < sizeof(fec_candidates) / sizeof(fec_candidates[0]); ++i) {
+            uint8_t *candidate_bytes = NULL;
+            size_t candidate_byte_count = 0;
+            size_t candidate_pair_count = 0;
+            double candidate_metric = 0.0;
+            uint32_t candidate_score = 0;
+
+            if (decode_viterbi_bytes(fec_candidates[i],
+                                     dibits,
+                                     dibit_count,
+                                     &candidate_bytes,
+                                     &candidate_byte_count,
+                                     &candidate_pair_count,
+                                     &candidate_metric) != 0) {
+                continue;
+            }
+
+            if (ts_path != NULL) {
+                rbdvbt_outer_metrics_t metrics;
+
+                if (rbdvbt_outer_analyze_inner(candidate_bytes, candidate_byte_count, &metrics) == 0) {
+                    candidate_score = metrics.score;
+                    fprintf(stderr,
+                            "[auto-fec] candidate=%s score=%u packets=%u pat=%u pmt=%u rs_uncorrectable=%u cc_errors=%u sync_bad=%u metric=%.2f\n",
+                            rbdvbt_fec_name(fec_candidates[i]),
+                            candidate_score,
+                            metrics.packets,
+                            metrics.pat_packets,
+                            metrics.pmt_packets,
+                            metrics.rs_uncorrectable,
+                            metrics.cc_errors,
+                            metrics.sync_bad,
+                            candidate_metric);
+                }
+            } else if (candidate_pair_count > 0u) {
+                double normalized = candidate_metric / (double)candidate_pair_count;
+
+                candidate_score = normalized > 0.0 ? (uint32_t)(1000000.0 / (1.0 + normalized)) : 1000000u;
+                fprintf(stderr,
+                        "[auto-fec] candidate=%s score=%u normalized_metric=%.6f metric=%.2f\n",
+                        rbdvbt_fec_name(fec_candidates[i]),
+                        candidate_score,
+                        normalized,
+                        candidate_metric);
+            }
+
+            if (selected_bytes == NULL || candidate_score > selected_score) {
+                free(selected_bytes);
+                selected_bytes = candidate_bytes;
+                selected_byte_count = candidate_byte_count;
+                selected_pair_count = candidate_pair_count;
+                selected_metric = candidate_metric;
+                selected_fec = fec_candidates[i];
+                selected_score = candidate_score;
+                candidate_bytes = NULL;
+            }
+
+            free(candidate_bytes);
+        }
+
+        if (selected_bytes == NULL) {
+            fprintf(stderr, "[auto-fec] failed to decode any FEC candidate\n");
+            return -1;
+        }
+
+        fprintf(stderr,
+                "[auto-fec] selected=%s score=%u\n",
+                rbdvbt_fec_name(selected_fec),
+                selected_score);
+
+        {
+            rbdvbt_status_context_t selected_status;
+            const rbdvbt_status_context_t *selected_status_ptr = status;
+            int rc;
+
+            if (status != NULL) {
+                selected_status = *status;
+                selected_status.fec = rbdvbt_fec_name(selected_fec);
+                selected_status_ptr = &selected_status;
+            }
+
+            rc = write_selected_viterbi_output(selected_fec,
+                                               selected_bytes,
+                                               selected_byte_count,
+                                               dibit_count,
+                                               selected_pair_count,
+                                               selected_metric,
+                                               path,
+                                               ts_path,
+                                               selected_status_ptr);
+            free(selected_bytes);
+            return rc;
+        }
+    }
 }
 
 static int estimate_dvbt2k_pilot_phase(const complexf_t *shifted,
@@ -3850,8 +4110,8 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     size_t count = 0;
     rbdvbt_iq_stats_t stats;
     uint32_t fft_size = effective_cfg.fft_size;
-    uint32_t gi_len = guard_samples(fft_size, effective_cfg.guard_interval);
-    uint32_t symbol_len = fft_size + gi_len;
+    uint32_t gi_len = 0;
+    uint32_t symbol_len = 0;
     uint32_t sync_symbols;
     uint32_t start;
     complexf_t corr;
@@ -3865,7 +4125,12 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     char status_symbol_rate[16];
     int rc = -1;
 
-    if (gi_len == 0 || symbol_len <= fft_size) {
+    if (effective_cfg.guard_interval != RBDVBT_GI_AUTO) {
+        gi_len = guard_samples(fft_size, effective_cfg.guard_interval);
+        symbol_len = fft_size + gi_len;
+    }
+
+    if (effective_cfg.guard_interval != RBDVBT_GI_AUTO && (gi_len == 0 || symbol_len <= fft_size)) {
         fprintf(stderr, "invalid guard interval for fft-size %u\n", fft_size);
         return -1;
     }
@@ -3938,6 +4203,22 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                 count);
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
         rbdvbt_status_publish_idle(&status, "resample", (uint64_t)stats.samples);
+    }
+
+    if (effective_cfg.guard_interval == RBDVBT_GI_AUTO) {
+        effective_cfg.guard_interval = select_guard_interval_auto(&effective_cfg, samples, count, fft_size);
+        gi_len = guard_samples(fft_size, effective_cfg.guard_interval);
+        symbol_len = fft_size + gi_len;
+        init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+        rbdvbt_status_publish_idle(&status, "auto-gi", (uint64_t)stats.samples);
+    } else if (gi_len == 0 || symbol_len <= fft_size) {
+        gi_len = guard_samples(fft_size, effective_cfg.guard_interval);
+        symbol_len = fft_size + gi_len;
+    }
+
+    if (gi_len == 0 || symbol_len <= fft_size) {
+        fprintf(stderr, "invalid guard interval for fft-size %u\n", fft_size);
+        goto done;
     }
 
     if (count < (size_t)symbol_len * 4u) {

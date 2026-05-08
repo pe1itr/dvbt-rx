@@ -55,7 +55,9 @@ static int parse_symbol_rate(const char *text, rbdvbt_symbol_rate_t *out)
 
 static int parse_guard_interval(const char *text, rbdvbt_guard_interval_t *out)
 {
-    if (strcmp(text, "1/8") == 0) {
+    if (strcmp(text, "auto") == 0) {
+        *out = RBDVBT_GI_AUTO;
+    } else if (strcmp(text, "1/8") == 0) {
         *out = RBDVBT_GI_1_8;
     } else if (strcmp(text, "1/16") == 0) {
         *out = RBDVBT_GI_1_16;
@@ -70,7 +72,9 @@ static int parse_guard_interval(const char *text, rbdvbt_guard_interval_t *out)
 
 static int parse_fec(const char *text, rbdvbt_fec_t *out)
 {
-    if (strcmp(text, "1/2") == 0 || strcmp(text, "12") == 0) {
+    if (strcmp(text, "auto") == 0) {
+        *out = RBDVBT_FEC_AUTO;
+    } else if (strcmp(text, "1/2") == 0 || strcmp(text, "12") == 0) {
         *out = RBDVBT_FEC_1_2;
     } else if (strcmp(text, "2/3") == 0 || strcmp(text, "23") == 0) {
         *out = RBDVBT_FEC_2_3;
@@ -142,12 +146,12 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             }
         } else if (strcmp(arg, "--gi") == 0 && i + 1 < argc) {
             if (parse_guard_interval(argv[++i], &cfg->guard_interval) != 0) {
-                fprintf(stderr, "invalid --gi value; expected 1/8, 1/16, or 1/32\n");
+                fprintf(stderr, "invalid --gi value; expected auto, 1/8, 1/16, or 1/32\n");
                 return -1;
             }
         } else if (strcmp(arg, "--fec") == 0 && i + 1 < argc) {
             if (parse_fec(argv[++i], &cfg->fec) != 0) {
-                fprintf(stderr, "invalid --fec value; expected 1/2, 2/3, 3/4, 5/6, or 7/8\n");
+                fprintf(stderr, "invalid --fec value; expected auto, 1/2, 2/3, 3/4, 5/6, or 7/8\n");
                 return -1;
             }
         } else if (strcmp(arg, "--input-format") == 0 && i + 1 < argc) {
@@ -283,7 +287,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
 void rbdvbt_print_usage(const char *argv0)
 {
     fprintf(stderr,
-            "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|250k|333k|500k --gi 1/8|1/16|1/32 [--fec 1/2|2/3|3/4|5/6|7/8 --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|-\n"
+            "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|250k|333k|500k --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|-\n"
             "       use --ts-out - or --stdout-ts to write MPEG-TS packets to stdout; use --status-json status.json for receiver status]\n",
             argv0);
 }
@@ -312,6 +316,8 @@ const char *rbdvbt_symbol_rate_name(rbdvbt_symbol_rate_t sr)
 const char *rbdvbt_guard_interval_name(rbdvbt_guard_interval_t gi)
 {
     switch (gi) {
+    case RBDVBT_GI_AUTO:
+        return "auto";
     case RBDVBT_GI_1_8:
         return "1/8";
     case RBDVBT_GI_1_16:
@@ -326,6 +332,8 @@ const char *rbdvbt_guard_interval_name(rbdvbt_guard_interval_t gi)
 const char *rbdvbt_fec_name(rbdvbt_fec_t fec)
 {
     switch (fec) {
+    case RBDVBT_FEC_AUTO:
+        return "auto";
     case RBDVBT_FEC_1_2:
         return "1/2";
     case RBDVBT_FEC_2_3:
@@ -344,6 +352,8 @@ const char *rbdvbt_fec_name(rbdvbt_fec_t fec)
 double rbdvbt_guard_interval_fraction(rbdvbt_guard_interval_t gi)
 {
     switch (gi) {
+    case RBDVBT_GI_AUTO:
+        return 0.0;
     case RBDVBT_GI_1_8:
         return 1.0 / 8.0;
     case RBDVBT_GI_1_16:
