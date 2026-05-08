@@ -283,6 +283,40 @@ extra DVB-T locktijd en lagere netto bitrate juist nadelig zijn. Als het
 probleem echo-delay of multipath is, kan DVB-T met een passende guard interval
 wel duidelijk voordeel geven.
 
+## Andere Gebruiksdoelen
+
+### 51.7 MHz / 6m Sporadic-E
+
+Een interessant gebruiksdoel is DATV op `51.7 MHz` in de 6m-band via
+Sporadic-E. Es-openingen kunnen zeer sterke signalen geven en soms lang genoeg
+duren om de extra DVB-T locktijd minder zwaar te laten wegen. Er is in dit
+project nog geen meetdata over de delay spread of multipathstructuur van
+Sporadic-E, dus het is niet verstandig om daar al harde guard-interval regels
+aan te koppelen. Wel is bekend dat Es-signalen vervorming, selectieve fading en
+snelle variatie kunnen vertonen. Juist daar kan OFDM interessant zijn, omdat de
+informatie over veel carriers wordt verdeeld en pilots gebruikt kunnen worden om
+fase- en kanaalvervorming te volgen.
+
+Praktisch is `333k`, FEC `2/3`, GI `1/32` een logisch startpunt bij sterke en
+stabiele Es. Bij zichtbare packet errors of selectieve fading is `250k` met FEC
+`2/3` of `1/2` een robuustere test. Een langere guard is pas zinvol als metingen
+laten zien dat echo-delay en niet fading de beperkende factor is.
+
+### Mobiel en Stedelijke Reflecties
+
+DVB-T heeft een duidelijker meerwaarde voor mobiele stations en stations in een
+stadsomgeving. Daar zijn reflecties tegen gebouwen, voertuigen en andere
+objecten vaak onderdeel van het kanaal. Een single-carrier systeem zoals DVB-S
+of DVB-S2 kan door zulke reflecties diepe fading of intersymbol interference
+krijgen, terwijl DVB-T met OFDM en een passende guard interval juist voor dit
+soort multipath is ontworpen.
+
+Voor mobiel of stedelijk gebruik is de eerste keuze daarom meestal niet de
+hoogste bitrate, maar een instelling die lock vasthoudt tijdens beweging en
+reflecties. Begin conservatief met `250k`, FEC `2/3`, GI `1/16` of `1/8` wanneer
+multipath zichtbaar dominant is. Als de route schoon is en lock stabiel blijft,
+kan `333k` met GI `1/32` of `1/16` meer throughput geven.
+
 ## Decoder Performance
 
 De performancegrafieken zijn Monte Carlo simulaties van de inner FEC-keten:
