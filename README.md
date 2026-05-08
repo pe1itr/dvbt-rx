@@ -278,6 +278,10 @@ de guard-overhead schuiven de curves ongeveer `0.38 dB` ongunstiger dan bij
 ## Licentie
 
 Deze software mag worden gebruikt, aangepast en verspreid, ook in afgeleide
-projecten, mits de oorspronkelijke auteur duidelijk wordt vermeld.
+projecten, mits de oorspronkelijke auteur duidelijk wordt vermeld:
+
+```text
+Rob Hardenberg / PE1ITR
+```
 
 Zie [LICENSE](LICENSE) voor de volledige voorwaarden.
