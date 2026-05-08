@@ -128,7 +128,7 @@ Status bekijken in een tweede terminal:
 | Parameter | Betekenis |
 |---|---|
 | `--stdin` | Lees IQ van standaardinvoer. Verplicht. |
-| `--input-format s16` | Interleaved signed 16-bit little-endian IQ. |
+| `--input-format s16` | Interleaved signed 16-bit little-endian IQ. Dit is de default wanneer `--input-format` wordt weggelaten. |
 | `--input-format u8` | Interleaved unsigned 8-bit IQ. |
 | `--sample-rate HZ` | Sample rate van het IQ-bestand of de SDR-stream. |
 | `--max-samples N` | Verwerk maximaal `N` IQ samples. Handig voor tests. |
