@@ -1,7 +1,8 @@
 # rbdvbt_rx
 
 `rbdvbt_rx` is een reduced-bandwidth DVB-T ontvanger voor amateur-DATV
-experimenten. Het programma leest complex IQ van `stdin`, demoduleert een
+experimenten. Het programma is bedoeld om achter een SDR-ontvanger of
+IQ-opname te draaien. Het leest raw complex IQ van `stdin`, demoduleert een
 bekend DVB-T QPSK signaal en schrijft MPEG-TS pakketten naar `stdout` of naar
 een bestand.
 
@@ -13,8 +14,12 @@ symbolrates, bijvoorbeeld `150k`, `250k` en `333k`.
 De primaire use-case is:
 
 ```text
-IQ opname of SDR stream -> rbdvbt_rx -> MPEG-TS -> ffplay/VLC
+SDR ontvanger of IQ opname -> raw complex IQ -> rbdvbt_rx -> MPEG-TS -> ffplay/VLC
 ```
+
+De SDR-kant is bewust buiten het programma gehouden. Een tool zoals `rtl_sdr`,
+SoapySDR, GNU Radio, SDRangel, `hackrf_transfer` of een eigen captureprogramma
+kan IQ samples leveren; `rbdvbt_rx` verwacht die samples op `stdin`.
 
 Belangrijke ontwerpkeuzes:
 
@@ -52,6 +57,10 @@ build/dvbt_fec_snr_plot     hulpprogramma voor performancegrafieken
 ```
 
 ## Basisgebruik
+
+`rbdvbt_rx` leest geen RF-hardware rechtstreeks uit. Gebruik een SDR-programma
+of een eerder opgenomen IQ-bestand en pipe of redirect de raw IQ data naar
+`stdin`.
 
 Voor een IQ-bestand met interleaved signed 16-bit IQ:
 
