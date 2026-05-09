@@ -2090,9 +2090,10 @@ static void ts_validator_report(const ts_validator_t *v)
     ts_pid_format(v->audio_pid, audio_pid, sizeof(audio_pid));
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
-        v->sync_bad != 0u ||
-        v->transport_errors != 0u ||
-        v->cc_errors != 0u) {
+        (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) &&
+         (v->sync_bad != 0u ||
+          v->transport_errors != 0u ||
+          v->cc_errors != 0u))) {
         fprintf(stderr,
                 "[ts] packets=%u sync_bad=%u transport_errors=%u cc_errors=%u pat_packets=%u pmt_packets=%u sdt_packets=%u pmt_pid=%s pcr_pid=%s video_pid=%s video_type=0x%02x audio_pid=%s audio_type=0x%02x service=\"%s\" provider=\"%s\"\n",
                 v->packets,
@@ -2894,7 +2895,9 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             goto done;
         }
 
-        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) || rs_uncorrectable != 0u || written == 0u) {
+        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
+            (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) &&
+             (rs_uncorrectable != 0u || written == 0u))) {
             fprintf(stderr,
                     "[outer] grdvbt_stream input_bytes=%llu deint_bytes=%llu rs_buffer=%u branch=%u block_phase=%u processed_blocks=%u written_packets=%u rs_bad=%u rs_corrected=%u rs_corrected_bytes=%u rs_uncorrectable=%u output=%s\n",
                     (unsigned long long)live_grdvbt_outer.input_bytes,
@@ -3117,7 +3120,9 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         }
 
         best.blocks = processed_blocks;
-        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) || rs_uncorrectable != 0u || written == 0u) {
+        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
+            (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) &&
+             (rs_uncorrectable != 0u || written == 0u))) {
             fprintf(stderr,
                     "[outer] leandvb_stream buffered=%zu processed_blocks=%u block_phase=%u written_packets=%u rs_bad=%u rs_corrected=%u rs_corrected_bytes=%u rs_uncorrectable=%u output=%s\n",
                     live_outer_stream.count,
@@ -3383,7 +3388,9 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         }
     }
 
-    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) || rs_uncorrectable != 0u || written == 0u) {
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
+        (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) &&
+         (rs_uncorrectable != 0u || written == 0u))) {
         fprintf(stderr,
                 "[outer] deint_phase=%u rs_phase=%u block_phase=%u scan_blocks=%u scan_rs_ok=%u scan_sync_ok=%u written_packets=%u rs_bad=%u rs_corrected=%u rs_corrected_bytes=%u rs_uncorrectable=%u output=%s\n",
                 best.deint_phase,
