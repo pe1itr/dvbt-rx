@@ -4056,8 +4056,9 @@ static void live_health_maybe_emit_locked(double now)
         return;
     }
 
-    if (live_health.chunks > 0u || live_health.packets > 0u ||
-        live_health.fifo_drops > 0u || live_health.cont_bad > 0u) {
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) &&
+        (live_health.chunks > 0u || live_health.packets > 0u ||
+         live_health.fifo_drops > 0u || live_health.cont_bad > 0u)) {
         double lock_avg = live_health.chunks > 0u ?
             live_health.lock_sum / (double)live_health.chunks : 0.0;
         double snr_avg = live_health.chunks > 0u ?
@@ -5130,7 +5131,7 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
 	                                                   path,
 		                                                   ts_path,
 	                                                   status);
-                if (status != NULL && status->live_mode) {
+                if (status != NULL && status->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                     output_t1 = monotonic_seconds();
                     fprintf(stderr,
                             "[viterbi-time] seq=%llu symbols=%u dibits=%zu bytes=%zu viterbi=%.3fs output_outer=%.3fs total=%.3fs\n",
@@ -6660,25 +6661,27 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         }
     }
 
-    fprintf(stderr,
-            "[dvbt2k] fft=2048 gi=%u symbol=%u symbols=%u data_carriers=%u demap_dibits=%llu avg_pilot_lock=%.5f snr=%.2fdB cfo=%.2fHz bin_shift=%d conjugate=%d symbol_phase=%d constellation=%s svg=%s demap=%s viterbi=%s ts=%s fec=%s\n",
-            gi_len,
-            symbol_len,
-            used_symbols,
-            RBDVBT_DVBT_2K_DATA_CELLS,
-            (unsigned long long)demap_dibits,
-            pilot_lock_count > 0 ? pilot_lock_sum / (double)pilot_lock_count : 0.0,
-            evm_count > 0 && evm_error_sum > 0.0 ? 10.0 * log10((double)evm_count / evm_error_sum) : 0.0,
-            cfo_hz,
-            best_bin_shift,
-            best_conjugate,
-            best_symbol_phase,
-            cfg->constellation_out != NULL ? cfg->constellation_out : "-",
-            cfg->constellation_svg != NULL ? cfg->constellation_svg : "-",
-            cfg->demap_out != NULL ? cfg->demap_out : "-",
-            cfg->viterbi_out != NULL ? cfg->viterbi_out : "-",
-            cfg->ts_out != NULL ? cfg->ts_out : "-",
-            rbdvbt_fec_name(cfg->fec));
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        fprintf(stderr,
+                "[dvbt2k] fft=2048 gi=%u symbol=%u symbols=%u data_carriers=%u demap_dibits=%llu avg_pilot_lock=%.5f snr=%.2fdB cfo=%.2fHz bin_shift=%d conjugate=%d symbol_phase=%d constellation=%s svg=%s demap=%s viterbi=%s ts=%s fec=%s\n",
+                gi_len,
+                symbol_len,
+                used_symbols,
+                RBDVBT_DVBT_2K_DATA_CELLS,
+                (unsigned long long)demap_dibits,
+                pilot_lock_count > 0 ? pilot_lock_sum / (double)pilot_lock_count : 0.0,
+                evm_count > 0 && evm_error_sum > 0.0 ? 10.0 * log10((double)evm_count / evm_error_sum) : 0.0,
+                cfo_hz,
+                best_bin_shift,
+                best_conjugate,
+                best_symbol_phase,
+                cfg->constellation_out != NULL ? cfg->constellation_out : "-",
+                cfg->constellation_svg != NULL ? cfg->constellation_svg : "-",
+                cfg->demap_out != NULL ? cfg->demap_out : "-",
+                cfg->viterbi_out != NULL ? cfg->viterbi_out : "-",
+                cfg->ts_out != NULL ? cfg->ts_out : "-",
+                rbdvbt_fec_name(cfg->fec));
+    }
 
     if (cfg->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
         double demod_t1 = monotonic_seconds();
@@ -7023,22 +7026,24 @@ static int write_constellation(const rbdvbt_config_t *cfg,
         fprintf(eq_svg, "</svg>\n");
     }
 
-    fprintf(stderr,
-            "[probe] fft_size=%u gi_samples=%u symbol_samples=%u symbols=%u active_bins=%d data_bins=%d power_threshold=%.4g qpsk_threshold=%.4f cfo=%.2fHz constellation=%s svg=%s equalized=%s spectrum=%s metrics=%s\n",
-            fft_size,
-            gi_len,
-            symbol_len,
-            symbols,
-            active_bins,
-            data_bins,
-            active_threshold,
-            score_threshold,
-            cfo_hz,
-            cfg->constellation_out,
-            cfg->constellation_svg != NULL ? cfg->constellation_svg : "-",
-            cfg->equalized_out != NULL ? cfg->equalized_out : "-",
-            cfg->spectrum_out != NULL ? cfg->spectrum_out : "-",
-            cfg->carrier_metrics_out != NULL ? cfg->carrier_metrics_out : "-");
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        fprintf(stderr,
+                "[probe] fft_size=%u gi_samples=%u symbol_samples=%u symbols=%u active_bins=%d data_bins=%d power_threshold=%.4g qpsk_threshold=%.4f cfo=%.2fHz constellation=%s svg=%s equalized=%s spectrum=%s metrics=%s\n",
+                fft_size,
+                gi_len,
+                symbol_len,
+                symbols,
+                active_bins,
+                data_bins,
+                active_threshold,
+                score_threshold,
+                cfo_hz,
+                cfg->constellation_out,
+                cfg->constellation_svg != NULL ? cfg->constellation_svg : "-",
+                cfg->equalized_out != NULL ? cfg->equalized_out : "-",
+                cfg->spectrum_out != NULL ? cfg->spectrum_out : "-",
+                cfg->carrier_metrics_out != NULL ? cfg->carrier_metrics_out : "-");
+    }
 
     rc = 0;
 
@@ -7342,14 +7347,16 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     cfo_hz = -atan2(corr.im, corr.re) * (double)effective_cfg.sample_rate_hz /
              (2.0 * M_PI * (double)fft_size);
 
-    fprintf(stderr,
-            "[sync] start=%u score=%.4f corr_phase=%.4f cfo=%.2fHz sync_symbols=%u mode=%s\n",
-            start,
-            score,
-            atan2(corr.im, corr.re),
-            cfo_hz,
-            sync_symbols,
-            used_live_sync_hint ? "track" : "acquire");
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        fprintf(stderr,
+                "[sync] start=%u score=%.4f corr_phase=%.4f cfo=%.2fHz sync_symbols=%u mode=%s\n",
+                start,
+                score,
+                atan2(corr.im, corr.re),
+                cfo_hz,
+                sync_symbols,
+                used_live_sync_hint ? "track" : "acquire");
+    }
     live_frontend_sync_mode = used_live_sync_hint ? "track" : "acquire";
     t_sync = monotonic_seconds();
 

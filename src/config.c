@@ -122,7 +122,10 @@ static int parse_input_format(const char *text, rbdvbt_input_format_t *out)
 
 static int parse_log_level(const char *text, rbdvbt_log_level_t *out)
 {
-    if (strcmp(text, "error") == 0 || strcmp(text, "err") == 0) {
+    if (strcmp(text, "quiet") == 0 || strcmp(text, "none") == 0 ||
+        strcmp(text, "silent") == 0 || strcmp(text, "off") == 0) {
+        *out = RBDVBT_LOG_QUIET;
+    } else if (strcmp(text, "error") == 0 || strcmp(text, "err") == 0) {
         *out = RBDVBT_LOG_ERROR;
     } else if (strcmp(text, "warn") == 0 || strcmp(text, "warning") == 0) {
         *out = RBDVBT_LOG_WARN;
@@ -179,7 +182,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             cfg->log_level = RBDVBT_LOG_DEBUG;
         } else if ((strcmp(arg, "--loglevel") == 0 || strcmp(arg, "--log-level") == 0) && i + 1 < argc) {
             if (parse_log_level(argv[++i], &cfg->log_level) != 0) {
-                fprintf(stderr, "invalid --loglevel value; expected error, warn, info, debug, or trace\n");
+                fprintf(stderr, "invalid --loglevel value; expected quiet, error, warn, info, debug, or trace\n");
                 return -1;
             }
         } else if (strcmp(arg, "--sample-rate") == 0 && i + 1 < argc) {
@@ -342,7 +345,7 @@ void rbdvbt_print_usage(const char *argv0)
 {
     fprintf(stderr,
             "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|250k|333k|500k|125000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|- --wait-video-start\n"
-            "       --gui --live-symbols N --loglevel error|warn|info|debug|trace\n"
+            "       --gui --live-symbols N --loglevel quiet|error|warn|info|debug|trace\n"
             "       use --ts-out - or --stdout-ts to write MPEG-TS packets to stdout; use --status-json status.json for receiver status]\n",
             argv0);
 }
@@ -360,6 +363,8 @@ void rbdvbt_log_set_level(rbdvbt_log_level_t level)
 const char *rbdvbt_log_level_name(rbdvbt_log_level_t level)
 {
     switch (level) {
+    case RBDVBT_LOG_QUIET:
+        return "quiet";
     case RBDVBT_LOG_ERROR:
         return "error";
     case RBDVBT_LOG_WARN:

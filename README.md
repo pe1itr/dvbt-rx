@@ -194,7 +194,7 @@ Viterbi optimalisatie ligt de Viterbi-tijd voor 64-symbol chunks typisch rond
 | `--viterbi-out FILE.bin` | Schrijf bytes na inner Viterbi decoder. |
 | `--status-json FILE.json` | Schrijf periodiek receiverstatus als JSON. |
 | `--status-period-packets N` | Statusupdate elke `N` TS packets; tijdens input elke `N * 4096` IQ samples. |
-| `--loglevel LEVEL` | Logdetail: `error`, `warn`, `info`, `debug` of `trace`. Default is `info`; gebruik `debug` voor uitgebreide DSP/FIFO-analyse. |
+| `--loglevel LEVEL` | Logdetail: `quiet`, `error`, `warn`, `info`, `debug` of `trace`. Default is `info`; gebruik `quiet` voor geen normale receiver-logoutput en `debug` voor uitgebreide DSP/FIFO-analyse. |
 
 ## Parameterkeuze
 

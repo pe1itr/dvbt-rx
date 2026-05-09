@@ -32,6 +32,7 @@ typedef enum {
 } rbdvbt_fec_t;
 
 typedef enum {
+    RBDVBT_LOG_QUIET = -1,
     RBDVBT_LOG_ERROR = 0,
     RBDVBT_LOG_WARN,
     RBDVBT_LOG_INFO,

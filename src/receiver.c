@@ -94,7 +94,7 @@ static int run_live_constellation_probe(const rbdvbt_config_t *cfg)
                 live_cfg.probe_symbols = live_target_symbols;
             }
         }
-    } else if (live_cfg.max_samples == 0u) {
+    } else if (live_cfg.max_samples == 0u && rbdvbt_log_enabled(RBDVBT_LOG_WARN)) {
         fprintf(stderr,
                 "[live] --max-samples is not set; using the probe default chunk size. "
                 "For lower restart latency set --max-samples and --probe-symbols explicitly.\n");
@@ -110,27 +110,33 @@ static int run_live_constellation_probe(const rbdvbt_config_t *cfg)
         rc = rbdvbt_run_constellation_probe(&live_cfg);
         if (rc == RBDVBT_PROBE_EOF) {
             rbdvbt_live_decoder_shutdown();
-            fprintf(stderr,
-                    "[live] eof chunks=%llu ok=%llu failed=%llu\n",
-                    (unsigned long long)(chunks - 1u),
-                    (unsigned long long)ok_chunks,
-                    (unsigned long long)failed_chunks);
+            if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                fprintf(stderr,
+                        "[live] eof chunks=%llu ok=%llu failed=%llu\n",
+                        (unsigned long long)(chunks - 1u),
+                        (unsigned long long)ok_chunks,
+                        (unsigned long long)failed_chunks);
+            }
             return 0;
         }
         if (rc != 0) {
             failed_chunks++;
-            fprintf(stderr,
-                    "[live] chunk=%llu failed rc=%d; continuing acquisition\n",
-                    (unsigned long long)chunks,
-                    rc);
+            if (rbdvbt_log_enabled(RBDVBT_LOG_WARN)) {
+                fprintf(stderr,
+                        "[live] chunk=%llu failed rc=%d; continuing acquisition\n",
+                        (unsigned long long)chunks,
+                        rc);
+            }
             continue;
         }
         ok_chunks++;
-        fprintf(stderr,
-                "[live] chunk=%llu done ok=%llu failed=%llu\n",
-                (unsigned long long)chunks,
-                (unsigned long long)ok_chunks,
-                (unsigned long long)failed_chunks);
+        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+            fprintf(stderr,
+                    "[live] chunk=%llu done ok=%llu failed=%llu\n",
+                    (unsigned long long)chunks,
+                    (unsigned long long)ok_chunks,
+                    (unsigned long long)failed_chunks);
+        }
     }
 }
 
