@@ -9,6 +9,8 @@ een bestand.
 Het programma is bedoeld voor Portsdown-achtige DVB-T signalen met lage
 symbolrates, bijvoorbeeld `150k`, `250k` en `333k`.
 
+![ffplay met ontvangen DVB-T transportstream](plots/screenshot_ffplay.png)
+
 ## Doel
 
 De primaire use-case is:
@@ -155,6 +157,20 @@ Met deze live sample-rate stream is `250k`, FEC `2/3`, GI `1/32` getest met
 stabiele pilot-lock, `rs_uncorr=0`, `cc=0` en geen FIFO-drops. Na de 64-state
 Viterbi optimalisatie ligt de Viterbi-tijd voor 64-symbol chunks typisch rond
 `0.125-0.127 s` op deze testopstelling.
+
+### GUI
+
+Met `--gui` toont de ontvanger live X11-vensters voor de belangrijkste
+ontvangstinformatie: QPSK-constellatie, service/status en het spectrum van de
+inkomende IQ-stream. Het spectrumvenster gebruikt de raw IQ-samples aan de
+ingang van de ontvanger; de x-as loopt over de volledige sample-rate span en de
+y-as toont het niveau in dB.
+
+![QPSK constellatie GUI](plots/gui_qpsk_constellation.png)
+
+![Service status GUI](plots/gui_service_status.png)
+
+![Input IQ spectrum GUI](plots/qui_input_iq_spectrum.png)
 
 ## Parameters
 
