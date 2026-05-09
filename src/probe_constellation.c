@@ -5751,12 +5751,14 @@ static void *live_decode_worker_main(void *arg)
 	                    job->model_symbol_start + symbol_offset;
                 double chunk_t0 = monotonic_seconds();
 
-	                if (dvbt_qpsk_inner_deinterleave_symbols(&job->symbols[offset],
+                if (dvbt_qpsk_inner_deinterleave_symbols(&job->symbols[offset],
                                                          count,
                                                          chunk_model_symbol,
                                                          &viterbi_dibits,
 	                                                         &viterbi_dibit_count) != 0) {
-                    fprintf(stderr, "[fifo1] worker inner_deinterleave_failed\n");
+                    if (rbdvbt_log_enabled(RBDVBT_LOG_ERROR)) {
+                        fprintf(stderr, "[fifo1] worker inner_deinterleave_failed\n");
+                    }
                     live_viterbi_stream_reset();
                     live_viterbi_state.valid = 0;
 	                    worker_failed = 1;
@@ -5786,7 +5788,9 @@ static void *live_decode_worker_main(void *arg)
                                          job->path,
                                          job->ts_path,
                                          &job->status) != 0) {
-                    fprintf(stderr, "[fifo1] worker inner_failed\n");
+                    if (rbdvbt_log_enabled(RBDVBT_LOG_ERROR)) {
+                        fprintf(stderr, "[fifo1] worker inner_failed\n");
+                    }
                     live_viterbi_stream_reset();
                     live_viterbi_state.valid = 0;
                     free(viterbi_dibits);
@@ -5961,7 +5965,8 @@ static int live_decode_enqueue(rbdvbt_fec_t fec,
     live_health_note_fifo(live_decode_queued_symbols,
                           live_decode_processing_symbols,
                           0u);
-    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) || live_decode_jobs > 2u) {
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
+        (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) && live_decode_jobs > 2u)) {
         fprintf(stderr,
 		                "[fifo1] queued_inner seq=%llu symbols=%u cells=%zu model_symbol=%u frontend_continuous=%d queued=%zu queued_symbols=%u processing_symbols=%u\n",
 		                (unsigned long long)seq_start,
