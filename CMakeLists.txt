@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(rbdvbt_rx C CXX)
+project(rbdvbt_rx VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -21,6 +21,7 @@ add_executable(rbdvbt_rx
 )
 
 target_include_directories(rbdvbt_rx PRIVATE include)
+target_compile_definitions(rbdvbt_rx PRIVATE RBDVBT_VERSION="${PROJECT_VERSION}")
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)

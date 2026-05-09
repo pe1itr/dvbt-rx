@@ -163,6 +163,8 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
         if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             rbdvbt_print_usage(argv[0]);
             return -1;
+        } else if (strcmp(arg, "--version") == 0 || strcmp(arg, "-V") == 0) {
+            cfg->show_version = 1;
         } else if (strcmp(arg, "--stdin") == 0) {
             cfg->use_stdin = 1;
         } else if (strcmp(arg, "--probe-constellation") == 0) {
@@ -320,6 +322,9 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
         }
     }
 
+    if (cfg->show_version) {
+        return 0;
+    }
     if (!cfg->use_stdin) {
         fprintf(stderr, "missing required --stdin\n");
         return -1;
@@ -345,7 +350,7 @@ void rbdvbt_print_usage(const char *argv0)
 {
     fprintf(stderr,
             "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|250k|333k|500k|125000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|- --wait-video-start\n"
-            "       --gui --live-symbols N --loglevel quiet|error|warn|info|debug|trace\n"
+            "       --gui --live-symbols N --loglevel quiet|error|warn|info|debug|trace --version\n"
             "       use --ts-out - or --stdout-ts to write MPEG-TS packets to stdout; use --status-json status.json for receiver status]\n",
             argv0);
 }

@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifndef RBDVBT_VERSION
+#define RBDVBT_VERSION "0.1.0"
+#endif
+
 typedef enum {
     RBDVBT_INPUT_U8,
     RBDVBT_INPUT_S16
@@ -90,6 +94,7 @@ typedef struct {
     uint32_t highres_fft_size;
     int gui;
     int verbose;
+    int show_version;
     rbdvbt_log_level_t log_level;
 } rbdvbt_config_t;
 
