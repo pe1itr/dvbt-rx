@@ -109,6 +109,9 @@ static live_iq_ring_t live_iq_ring = {
 #define GUI_FIFO_HISTORY_POINTS 720u
 #define GUI_FIFO_W 640u
 #define GUI_FIFO_H 260u
+#define GUI_SPECTRUM_NFFT 4096u
+#define GUI_SPECTRUM_W 760u
+#define GUI_SPECTRUM_H 300u
 
 typedef struct {
     pthread_mutex_t mutex;
@@ -143,6 +146,19 @@ typedef struct {
     size_t history_head;
 } gui_fifo_state_t;
 
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    pthread_t thread;
+    int enabled;
+    int started;
+    int stop;
+    int updated;
+    complexf_t samples[GUI_SPECTRUM_NFFT];
+    size_t sample_count;
+    uint32_t sample_rate_hz;
+} gui_spectrum_state_t;
+
 static gui_constellation_state_t gui_constellation = {
     PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_COND_INITIALIZER,
@@ -172,6 +188,19 @@ static gui_fifo_state_t gui_fifo = {
     0u,
     0u,
     {0u},
+    0u,
+    0u
+};
+
+static gui_spectrum_state_t gui_spectrum = {
+    PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_COND_INITIALIZER,
+    0,
+    0,
+    0,
+    0,
+    0,
+    {{0.0f, 0.0f}},
     0u,
     0u
 };
@@ -672,6 +701,308 @@ static void *gui_fifo_thread_main(void *arg)
     pthread_mutex_unlock(&gui_fifo.mutex);
     return NULL;
 }
+
+static void *gui_spectrum_thread_main(void *arg)
+{
+    Display *display;
+    int screen;
+    Window window;
+    GC gc;
+    Pixmap pixmap;
+    unsigned int width = GUI_SPECTRUM_W;
+    unsigned int height = GUI_SPECTRUM_H;
+    unsigned long black;
+    unsigned long green;
+    unsigned long grid;
+    unsigned long white;
+    unsigned long yellow;
+    Atom wm_delete;
+    fftwf_complex *fft_in = NULL;
+    fftwf_complex *fft_out = NULL;
+    fftwf_plan plan = NULL;
+    float smooth_db[GUI_SPECTRUM_NFFT];
+    int have_smooth = 0;
+
+    (void)arg;
+
+    display = XOpenDisplay(NULL);
+    if (display == NULL) {
+        fprintf(stderr, "[gui] unable to open X11 display; spectrum GUI disabled\n");
+        pthread_mutex_lock(&gui_spectrum.mutex);
+        gui_spectrum.enabled = 0;
+        gui_spectrum.started = 0;
+        pthread_mutex_unlock(&gui_spectrum.mutex);
+        return NULL;
+    }
+
+    fft_in = fftwf_malloc(sizeof(*fft_in) * GUI_SPECTRUM_NFFT);
+    fft_out = fftwf_malloc(sizeof(*fft_out) * GUI_SPECTRUM_NFFT);
+    if (fft_in == NULL || fft_out == NULL) {
+        fprintf(stderr, "[gui] failed to allocate spectrum FFT buffers\n");
+        goto fail;
+    }
+    plan = fftwf_plan_dft_1d((int)GUI_SPECTRUM_NFFT, fft_in, fft_out, FFTW_FORWARD, FFTW_ESTIMATE);
+    if (plan == NULL) {
+        fprintf(stderr, "[gui] failed to create spectrum FFTW plan\n");
+        goto fail;
+    }
+
+    screen = DefaultScreen(display);
+    black = BlackPixel(display, screen);
+    white = WhitePixel(display, screen);
+    green = gui_alloc_color(display, screen, "lime green", white);
+    grid = gui_alloc_color(display, screen, "gray25", white);
+    yellow = gui_alloc_color(display, screen, "gold", white);
+
+    window = XCreateSimpleWindow(display,
+                                 RootWindow(display, screen),
+                                 GUI_WINDOW_X,
+                                 GUI_WINDOW_Y + GUI_CONSTELLATION_H + GUI_WINDOW_GAP,
+                                 width,
+                                 height,
+                                 1,
+                                 white,
+                                 black);
+    gui_set_window_geometry(display,
+                            window,
+                            GUI_WINDOW_X,
+                            GUI_WINDOW_Y + GUI_CONSTELLATION_H + GUI_WINDOW_GAP,
+                            width,
+                            height);
+    XStoreName(display, window, "rbdvbt_rx input IQ spectrum");
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask | KeyPressMask);
+    wm_delete = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    XSetWMProtocols(display, window, &wm_delete, 1);
+    XMapWindow(display, window);
+    XMoveWindow(display, window, GUI_WINDOW_X, GUI_WINDOW_Y + GUI_CONSTELLATION_H + GUI_WINDOW_GAP);
+    gc = XCreateGC(display, window, 0, NULL);
+    pixmap = XCreatePixmap(display, window, width, height, DefaultDepth(display, screen));
+
+    while (1) {
+        struct timespec deadline;
+        complexf_t samples[GUI_SPECTRUM_NFFT];
+        size_t sample_count;
+        uint32_t sample_rate_hz;
+        float db_values[GUI_SPECTRUM_NFFT];
+        float db_min = 0.0f;
+        float db_max = 0.0f;
+        float plot_min;
+        float plot_max;
+        const unsigned int left = 58u;
+        const unsigned int right = 10u;
+        const unsigned int top = 24u;
+        const unsigned int bottom = 34u;
+        unsigned int graph_w;
+        unsigned int graph_h;
+
+        {
+            struct timeval now;
+
+            gettimeofday(&now, NULL);
+            deadline.tv_sec = now.tv_sec;
+            deadline.tv_nsec = (long)now.tv_usec * 1000L + 100000000L;
+        }
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+
+        pthread_mutex_lock(&gui_spectrum.mutex);
+        while (!gui_spectrum.stop && !gui_spectrum.updated) {
+            if (pthread_cond_timedwait(&gui_spectrum.cond,
+                                       &gui_spectrum.mutex,
+                                       &deadline) != 0) {
+                break;
+            }
+        }
+        if (gui_spectrum.stop) {
+            pthread_mutex_unlock(&gui_spectrum.mutex);
+            break;
+        }
+        sample_count = gui_spectrum.sample_count;
+        if (sample_count > GUI_SPECTRUM_NFFT) {
+            sample_count = GUI_SPECTRUM_NFFT;
+        }
+        memcpy(samples, gui_spectrum.samples, sample_count * sizeof(*samples));
+        sample_rate_hz = gui_spectrum.sample_rate_hz;
+        gui_spectrum.updated = 0;
+        pthread_mutex_unlock(&gui_spectrum.mutex);
+
+        while (XPending(display) > 0) {
+            XEvent event;
+
+            XNextEvent(display, &event);
+            if (event.type == ClientMessage && (Atom)event.xclient.data.l[0] == wm_delete) {
+                pthread_mutex_lock(&gui_spectrum.mutex);
+                gui_spectrum.enabled = 0;
+                gui_spectrum.stop = 1;
+                pthread_mutex_unlock(&gui_spectrum.mutex);
+                sample_count = 0u;
+                break;
+            }
+            if (event.type == ConfigureNotify) {
+                XConfigureEvent *cfg = &event.xconfigure;
+
+                if (cfg->width > 128 && cfg->height > 96 &&
+                    ((unsigned int)cfg->width != width || (unsigned int)cfg->height != height)) {
+                    width = (unsigned int)cfg->width;
+                    height = (unsigned int)cfg->height;
+                    XFreePixmap(display, pixmap);
+                    pixmap = XCreatePixmap(display, window, width, height, DefaultDepth(display, screen));
+                }
+            }
+        }
+        if (gui_spectrum.stop) {
+            break;
+        }
+
+        memset(fft_in, 0, sizeof(*fft_in) * GUI_SPECTRUM_NFFT);
+        for (size_t i = 0u; i < sample_count; ++i) {
+            double w = 0.5 - 0.5 * cos((2.0 * M_PI * (double)i) / (double)(GUI_SPECTRUM_NFFT - 1u));
+
+            fft_in[i][0] = (float)((double)samples[i].re * w);
+            fft_in[i][1] = (float)((double)samples[i].im * w);
+        }
+        fftwf_execute(plan);
+
+        for (size_t x = 0u; x < GUI_SPECTRUM_NFFT; ++x) {
+            size_t bin = (x + GUI_SPECTRUM_NFFT / 2u) % GUI_SPECTRUM_NFFT;
+            double re = fft_out[bin][0];
+            double im = fft_out[bin][1];
+            double p = (re * re + im * im) /
+                ((double)GUI_SPECTRUM_NFFT * (double)GUI_SPECTRUM_NFFT);
+            float db = (float)(10.0 * log10(p + 1.0e-20));
+
+            if (have_smooth) {
+                db = 0.65f * smooth_db[x] + 0.35f * db;
+            }
+            smooth_db[x] = db;
+            db_values[x] = db;
+            if (x == 0u || db < db_min) {
+                db_min = db;
+            }
+            if (x == 0u || db > db_max) {
+                db_max = db;
+            }
+        }
+        have_smooth = 1;
+
+        plot_max = ceilf((db_max + 3.0f) / 10.0f) * 10.0f;
+        plot_min = plot_max - 70.0f;
+        if (db_min < plot_min) {
+            plot_min = floorf(db_min / 10.0f) * 10.0f;
+        }
+        if (plot_max <= plot_min + 1.0f) {
+            plot_max = plot_min + 1.0f;
+        }
+
+        graph_w = width > left + right + 1u ? width - left - right : 1u;
+        graph_h = height > top + bottom + 1u ? height - top - bottom : 1u;
+
+        XSetForeground(display, gc, black);
+        XFillRectangle(display, pixmap, gc, 0, 0, width, height);
+
+        XSetForeground(display, gc, grid);
+        XDrawRectangle(display,
+                       pixmap,
+                       gc,
+                       (int)left,
+                       (int)top,
+                       graph_w,
+                       graph_h);
+        for (unsigned int i = 1u; i < 4u; ++i) {
+            int y = (int)(top + graph_h * i / 4u);
+
+            XDrawLine(display, pixmap, gc, (int)left, y, (int)(left + graph_w), y);
+        }
+        XDrawLine(display,
+                  pixmap,
+                  gc,
+                  (int)(left + graph_w / 2u),
+                  (int)top,
+                  (int)(left + graph_w / 2u),
+                  (int)(top + graph_h));
+
+        XSetForeground(display, gc, green);
+        for (unsigned int x = 1u; x < graph_w; ++x) {
+            size_t i0 = (size_t)(x - 1u) * GUI_SPECTRUM_NFFT / graph_w;
+            size_t i1 = (size_t)x * GUI_SPECTRUM_NFFT / graph_w;
+            float v0 = db_values[i0];
+            float v1 = db_values[i1];
+            int y0;
+            int y1;
+
+            if (v0 < plot_min) {
+                v0 = plot_min;
+            }
+            if (v0 > plot_max) {
+                v0 = plot_max;
+            }
+            if (v1 < plot_min) {
+                v1 = plot_min;
+            }
+            if (v1 > plot_max) {
+                v1 = plot_max;
+            }
+            y0 = (int)(top + (double)graph_h * (double)(plot_max - v0) / (double)(plot_max - plot_min) + 0.5);
+            y1 = (int)(top + (double)graph_h * (double)(plot_max - v1) / (double)(plot_max - plot_min) + 0.5);
+            XDrawLine(display, pixmap, gc, (int)(left + x - 1u), y0, (int)(left + x), y1);
+        }
+
+        {
+            char label[160];
+            char tick[32];
+            double fs = (double)sample_rate_hz;
+            double mhz = fs / 1000000.0;
+
+            snprintf(label,
+                     sizeof(label),
+                     "Input IQ spectrum  span=%.6g Hz  range=%.0f..%.0f dB",
+                     fs,
+                     plot_min,
+                     plot_max);
+            XSetForeground(display, gc, yellow);
+            XDrawString(display, pixmap, gc, 10, 18, label, (int)strlen(label));
+
+            snprintf(tick, sizeof(tick), "-%.3g MHz", mhz / 2.0);
+            XDrawString(display, pixmap, gc, (int)left, (int)(height - 10u), tick, (int)strlen(tick));
+            snprintf(tick, sizeof(tick), "0");
+            XDrawString(display, pixmap, gc, (int)(left + graph_w / 2u - 4u), (int)(height - 10u), tick, (int)strlen(tick));
+            snprintf(tick, sizeof(tick), "+%.3g MHz", mhz / 2.0);
+            XDrawString(display, pixmap, gc, (int)(left + graph_w - 72u), (int)(height - 10u), tick, (int)strlen(tick));
+            snprintf(tick, sizeof(tick), "%.0f dB", plot_max);
+            XDrawString(display, pixmap, gc, 8, (int)top + 5, tick, (int)strlen(tick));
+            snprintf(tick, sizeof(tick), "%.0f dB", plot_min);
+            XDrawString(display, pixmap, gc, 8, (int)(top + graph_h), tick, (int)strlen(tick));
+        }
+
+        XCopyArea(display, pixmap, window, gc, 0, 0, width, height, 0, 0);
+        XFlush(display);
+    }
+
+    XFreePixmap(display, pixmap);
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+fail:
+    if (plan != NULL) {
+        fftwf_destroy_plan(plan);
+    }
+    if (fft_in != NULL) {
+        fftwf_free(fft_in);
+    }
+    if (fft_out != NULL) {
+        fftwf_free(fft_out);
+    }
+    if (display != NULL) {
+        XCloseDisplay(display);
+    }
+
+    pthread_mutex_lock(&gui_spectrum.mutex);
+    gui_spectrum.started = 0;
+    gui_spectrum.enabled = 0;
+    pthread_mutex_unlock(&gui_spectrum.mutex);
+    return NULL;
+}
 #endif
 
 static void gui_fifo_submit(uint32_t queued, uint32_t processing, uint32_t capacity)
@@ -733,6 +1064,38 @@ static int gui_fifo_start(int enabled)
 #endif
 }
 
+static int gui_spectrum_start(int enabled)
+{
+    if (!enabled) {
+        return 0;
+    }
+#ifndef RBDVBT_HAVE_X11
+    return 0;
+#else
+    pthread_mutex_lock(&gui_spectrum.mutex);
+    if (gui_spectrum.started || gui_spectrum.enabled) {
+        pthread_mutex_unlock(&gui_spectrum.mutex);
+        return 0;
+    }
+    gui_spectrum.sample_count = 0u;
+    gui_spectrum.sample_rate_hz = 0u;
+    gui_spectrum.updated = 0;
+    gui_spectrum.stop = 0;
+    gui_spectrum.enabled = 1;
+    gui_spectrum.started = 1;
+    if (pthread_create(&gui_spectrum.thread, NULL, gui_spectrum_thread_main, NULL) != 0) {
+        gui_spectrum.enabled = 0;
+        gui_spectrum.started = 0;
+        pthread_mutex_unlock(&gui_spectrum.mutex);
+        fprintf(stderr, "[gui] failed to start spectrum GUI thread\n");
+        return -1;
+    }
+    pthread_detach(gui_spectrum.thread);
+    pthread_mutex_unlock(&gui_spectrum.mutex);
+    return 0;
+#endif
+}
+
 static int gui_constellation_start(int enabled)
 {
     if (!enabled) {
@@ -776,6 +1139,32 @@ static int gui_constellation_start(int enabled)
     pthread_mutex_unlock(&gui_constellation.mutex);
     return 0;
 #endif
+}
+
+static void gui_spectrum_submit(const complexf_t *samples, size_t sample_count, uint32_t sample_rate_hz)
+{
+    size_t copy_count;
+
+    if (samples == NULL || sample_count == 0u || sample_rate_hz == 0u) {
+        return;
+    }
+
+    pthread_mutex_lock(&gui_spectrum.mutex);
+    if (!gui_spectrum.enabled) {
+        pthread_mutex_unlock(&gui_spectrum.mutex);
+        return;
+    }
+    copy_count = sample_count;
+    if (copy_count > GUI_SPECTRUM_NFFT) {
+        samples += copy_count - GUI_SPECTRUM_NFFT;
+        copy_count = GUI_SPECTRUM_NFFT;
+    }
+    memcpy(gui_spectrum.samples, samples, copy_count * sizeof(*samples));
+    gui_spectrum.sample_count = copy_count;
+    gui_spectrum.sample_rate_hz = sample_rate_hz;
+    gui_spectrum.updated = 1;
+    pthread_cond_signal(&gui_spectrum.cond);
+    pthread_mutex_unlock(&gui_spectrum.mutex);
 }
 
 static void gui_constellation_submit(const complexf_t *points,
@@ -1034,6 +1423,9 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
                 rbdvbt_iq_stats_update(stats, stats_block, stats_n);
                 stats_pos += stats_n;
             }
+        }
+        if (cfg->gui) {
+            gui_spectrum_submit(&samples[count], got, cfg->sample_rate_hz);
         }
         count += got;
 
@@ -7123,6 +7515,9 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         return -1;
     }
     if (gui_fifo_start(effective_cfg.gui) != 0) {
+        return -1;
+    }
+    if (gui_spectrum_start(effective_cfg.gui) != 0) {
         return -1;
     }
 
