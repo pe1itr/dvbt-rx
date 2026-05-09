@@ -172,7 +172,7 @@ Viterbi optimalisatie ligt de Viterbi-tijd voor 64-symbol chunks typisch rond
 
 | Parameter | Keuzes | Betekenis |
 |---|---|---|
-| `--sr` | `125k`, `250k`, `333k`, `500k`, of `125000`, `250000`, `333000`, `333333`, `500000` | DVB-T symbolrate preset of numerieke Hz-waarde. `333000` en `333333` kiezen de 333k mode. |
+| `--sr` | `150k`, `250k`, `333k`, `500k`, of `150000`, `250000`, `333000`, `333333`, `500000` | DVB-T symbolrate preset of numerieke Hz-waarde. `125k`/`125000` wordt ook geaccepteerd als experimentele preset; `333000` en `333333` kiezen de 333k mode. |
 | `--gi` | `auto`, `1/8`, `1/16`, `1/32` | Guard interval. `auto` kiest via cyclic-prefix correlatie. |
 | `--fec` | `auto`, `1/2`, `2/3`, `3/4`, `5/6`, `7/8` | Inner FEC puncturing rate. `auto` kiest via Viterbi + outer TS score. |
 | `--dvbt-ir` | `1`, `2`, `4`, `8` | Interpolation/rate factor voor de DVB-T sample grid. |
@@ -196,6 +196,7 @@ Viterbi optimalisatie ligt de Viterbi-tijd voor 64-symbol chunks typisch rond
 | `--status-period-packets N` | Statusupdate elke `N` TS packets; tijdens input elke `N * 4096` IQ samples. |
 | `--loglevel LEVEL` | Logdetail: `quiet`, `error`, `warn`, `info`, `debug` of `trace`. Default is `info`; gebruik `quiet` voor geen normale receiver-logoutput en `debug` voor uitgebreide DSP/FIFO-analyse. |
 | `--version` | Toon het versienummer en stop. |
+| `--help`, `--info` | Toon programma-informatie, ondersteunde modes en opties, en stop. |
 
 ## Parameterkeuze
 

@@ -610,8 +610,8 @@ Praktische regel:
 333k voor throughput, 250k als praktische middenweg, 150k voor korte/fadende momenten.
 ```
 
-Let op: de performance-simulatietool modelleert 150k, 250k en 333k. De huidige
-receiver-CLI accepteert in de code nog de presets 125k, 250k, 333k en 500k.
+De receiver-CLI accepteert `150k`, `250k`, `333k` en `500k`. `125k` blijft
+beschikbaar als experimentele preset.
 
 ### FEC
 
@@ -650,8 +650,6 @@ totale zendpower. De README gebruikt:
   `--probe-constellation` route. Dat zou later een normale decode-mode moeten
   worden.
 - TPS wordt nog niet gebruikt voor autodetectie van FEC/GI/mode.
-- De receiver-CLI mist nog een `150k` preset terwijl de performance-analyse die
-  mode wel gebruikt.
 - `src/probe_constellation.c` bevat veel verantwoordelijkheden in een groot
   bestand. Functioneel was dit nuttig tijdens de doorbraakfase, maar later kan
   het gesplitst worden in acquisition, OFDM, equalizer, demap en inner-FEC.

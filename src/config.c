@@ -44,6 +44,8 @@ static int parse_symbol_rate(const char *text, rbdvbt_symbol_rate_t *out)
 
     if (strcmp(text, "125k") == 0 || strcmp(text, "125ks") == 0) {
         *out = RBDVBT_SR_125K;
+    } else if (strcmp(text, "150k") == 0 || strcmp(text, "150ks") == 0) {
+        *out = RBDVBT_SR_150K;
     } else if (strcmp(text, "250k") == 0 || strcmp(text, "250ks") == 0) {
         *out = RBDVBT_SR_250K;
     } else if (strcmp(text, "333k") == 0 || strcmp(text, "333ks") == 0) {
@@ -53,6 +55,8 @@ static int parse_symbol_rate(const char *text, rbdvbt_symbol_rate_t *out)
     } else if (parse_u32(text, &hz) == 0) {
         if (hz == 125000u) {
             *out = RBDVBT_SR_125K;
+        } else if (hz == 150000u) {
+            *out = RBDVBT_SR_150K;
         } else if (hz == 250000u) {
             *out = RBDVBT_SR_250K;
         } else if (hz == 333000u || hz == 333333u) {
@@ -161,8 +165,9 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
         const char *arg = argv[i];
 
         if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
-            rbdvbt_print_usage(argv[0]);
-            return -1;
+            cfg->show_help = 1;
+        } else if (strcmp(arg, "--info") == 0) {
+            cfg->show_help = 1;
         } else if (strcmp(arg, "--version") == 0 || strcmp(arg, "-V") == 0) {
             cfg->show_version = 1;
         } else if (strcmp(arg, "--stdin") == 0) {
@@ -194,7 +199,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             }
         } else if ((strcmp(arg, "--sr") == 0 || strcmp(arg, "--symbol-rate") == 0) && i + 1 < argc) {
             if (parse_symbol_rate(argv[++i], &cfg->symbol_rate) != 0) {
-                fprintf(stderr, "invalid --sr value; expected 125k, 250k, 333k, 500k, or Hz 125000, 250000, 333000, 333333, 500000\n");
+                fprintf(stderr, "invalid --sr value; expected 125k, 150k, 250k, 333k, 500k, or Hz 125000, 150000, 250000, 333000, 333333, 500000\n");
                 return -1;
             }
         } else if (strcmp(arg, "--gi") == 0 && i + 1 < argc) {
@@ -322,7 +327,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
         }
     }
 
-    if (cfg->show_version) {
+    if (cfg->show_help || cfg->show_version) {
         return 0;
     }
     if (!cfg->use_stdin) {
@@ -349,10 +354,76 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
 void rbdvbt_print_usage(const char *argv0)
 {
     fprintf(stderr,
-            "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|250k|333k|500k|125000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|- --wait-video-start\n"
-            "       --gui --live-symbols N --loglevel quiet|error|warn|info|debug|trace --version\n"
+            "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|150k|250k|333k|500k|125000|150000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|- --wait-video-start\n"
+            "       --gui --live-symbols N --loglevel quiet|error|warn|info|debug|trace --version --info\n"
             "       use --ts-out - or --stdout-ts to write MPEG-TS packets to stdout; use --status-json status.json for receiver status]\n",
             argv0);
+}
+
+void rbdvbt_print_info(const char *argv0)
+{
+    printf("rbdvbt_rx %s\n", RBDVBT_VERSION);
+    printf("Low-data-rate DVB-T QPSK demodulator for amateur DATV experiments.\n");
+    printf("Author: Rob Hardenberg, PE1ITR\n\n");
+    printf("Purpose:\n");
+    printf("  Demodulate raw complex IQ from stdin into MPEG-TS output for low datarate\n");
+    printf("  DVB-T QPSK signals, including live SDR streams and IQ recordings.\n\n");
+    printf("Supported DVB-T modes:\n");
+    printf("  Symbol rates: 150k, 250k, 333k, 500k");
+    printf("  (125k is also accepted as an experimental preset)\n");
+    printf("  FEC: auto, 1/2, 2/3, 3/4, 5/6, 7/8\n");
+    printf("  Guard interval: auto, 1/8, 1/16, 1/32\n");
+    printf("  Constellation: QPSK\n");
+    printf("  FFT mode: DVB-T 2K\n\n");
+    printf("Usage:\n");
+    printf("  %s --stdin --input-format s16 --sample-rate HZ --sr 150k|250k|333k|500k --gi auto|1/8|1/16|1/32 --fec auto|1/2|2/3|3/4|5/6|7/8 --ts-out FILE|-\n\n", argv0);
+    printf("Core options:\n");
+    printf("  --stdin                         Read IQ from stdin\n");
+    printf("  --input-format s16|u8            Input IQ format, default s16\n");
+    printf("  --sample-rate HZ                 Input IQ sample rate\n");
+    printf("  --sr RATE                        Symbol rate: 150k, 250k, 333k, 500k, or numeric Hz\n");
+    printf("  --gi auto|1/8|1/16|1/32          Guard interval\n");
+    printf("  --fec auto|1/2|2/3|3/4|5/6|7/8   Inner FEC code rate\n");
+    printf("  --dvbt-ir 1|2|4|8                DVB-T interpolation/rate factor\n");
+    printf("  --resample-to-dvbt-rate          Resample to the expected DVB-T grid\n");
+    printf("  --probe-constellation            Run the DVB-T/QPSK demodulation path\n");
+    printf("  --max-samples N                  Process at most N IQ samples\n\n");
+    printf("Output options:\n");
+    printf("  --ts-out FILE|-                  Write MPEG-TS to file or stdout\n");
+    printf("  --stdout-ts                      Equivalent to --ts-out -\n");
+    printf("  --wait-video-start               Start TS output at a clean video start point\n");
+    printf("  --status-json FILE.json          Write receiver status JSON\n");
+    printf("  --status-period-packets N        Status update interval\n\n");
+    printf("Live and GUI options:\n");
+    printf("  --live                           Decode a continuous stdin IQ stream\n");
+    printf("  --live-symbols N                 OFDM symbols per live frontend chunk\n");
+    printf("  --gui                            Show constellation, FIFO, spectrum, and status windows\n\n");
+    printf("Diagnostics and files:\n");
+    printf("  --loglevel quiet|error|warn|info|debug|trace\n");
+    printf("  --constellation-out FILE.csv     Write constellation points\n");
+    printf("  --constellation-svg FILE.svg     Write constellation SVG\n");
+    printf("  --spectrum-out FILE.csv          Write spectrum CSV\n");
+    printf("  --spectrum-svg FILE.svg          Write spectrum SVG\n");
+    printf("  --demap-out FILE.csv             Write demapped dibits\n");
+    printf("  --viterbi-out FILE.bin           Write inner Viterbi bytes\n");
+    printf("  --equalized-out FILE.csv         Write equalized samples\n");
+    printf("  --equalized-svg FILE.svg         Write equalized SVG\n");
+    printf("  --carrier-metrics-out FILE.csv   Write carrier metrics\n");
+    printf("  --highres-spectrum-out FILE.csv  Write high resolution spectrum CSV\n");
+    printf("  --highres-spectrum-svg FILE.svg  Write high resolution spectrum SVG\n");
+    printf("  --acquisition-scan-out FILE.csv  Write acquisition scan CSV\n");
+    printf("  --acquisition-scan-svg FILE.svg  Write acquisition scan SVG\n");
+    printf("  --mapping-scan-out FILE.csv      Write mapping scan CSV\n");
+    printf("  --mapping-scan-svg FILE.svg      Write mapping scan SVG\n");
+    printf("  --window-sweep-out FILE.csv      Write timing window sweep CSV\n");
+    printf("  --window-sweep-svg FILE.svg      Write timing window sweep SVG\n");
+    printf("  --cp-timing-out FILE.csv         Write cyclic-prefix timing CSV\n");
+    printf("  --cp-timing-svg FILE.svg         Write cyclic-prefix timing SVG\n");
+    printf("  --fine-timing-out FILE.csv       Write fine timing CSV\n");
+    printf("  --fine-timing-svg FILE.svg       Write fine timing SVG\n\n");
+    printf("Other:\n");
+    printf("  --version, -V                    Show version and stop\n");
+    printf("  --help, -h, --info               Show this information and stop\n");
 }
 
 int rbdvbt_log_enabled(rbdvbt_log_level_t level)
@@ -395,6 +466,8 @@ const char *rbdvbt_symbol_rate_name(rbdvbt_symbol_rate_t sr)
     switch (sr) {
     case RBDVBT_SR_125K:
         return "125k";
+    case RBDVBT_SR_150K:
+        return "150k";
     case RBDVBT_SR_250K:
         return "250k";
     case RBDVBT_SR_333K:

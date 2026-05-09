@@ -14,6 +14,7 @@ typedef enum {
 
 typedef enum {
     RBDVBT_SR_125K = 125000,
+    RBDVBT_SR_150K = 150000,
     RBDVBT_SR_250K = 250000,
     RBDVBT_SR_333K = 333000,
     RBDVBT_SR_500K = 500000
@@ -94,12 +95,14 @@ typedef struct {
     uint32_t highres_fft_size;
     int gui;
     int verbose;
+    int show_help;
     int show_version;
     rbdvbt_log_level_t log_level;
 } rbdvbt_config_t;
 
 int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg);
 void rbdvbt_print_usage(const char *argv0);
+void rbdvbt_print_info(const char *argv0);
 int rbdvbt_log_enabled(rbdvbt_log_level_t level);
 void rbdvbt_log_set_level(rbdvbt_log_level_t level);
 const char *rbdvbt_log_level_name(rbdvbt_log_level_t level);

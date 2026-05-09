@@ -10,6 +10,10 @@ int main(int argc, char **argv)
     if (rbdvbt_parse_args(argc, argv, &cfg) != 0) {
         return 2;
     }
+    if (cfg.show_help) {
+        rbdvbt_print_info(argv[0]);
+        return 0;
+    }
     if (cfg.show_version) {
         printf("rbdvbt_rx %s\n", RBDVBT_VERSION);
         return 0;
