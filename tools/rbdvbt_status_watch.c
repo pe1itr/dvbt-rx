@@ -2,10 +2,14 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+static volatile sig_atomic_t stop_requested;
+static int terminal_screen_active;
 
 typedef struct {
     char symbol_rate[32];
@@ -45,6 +49,20 @@ typedef struct {
     unsigned rs_corrected;
     unsigned rs_corrected_bytes;
     unsigned rs_uncorrectable;
+    unsigned lamp_symbol_rate;
+    unsigned lamp_guard;
+    unsigned lamp_fec;
+    unsigned lamp_ofdm_sync;
+    unsigned lamp_inner_fec;
+    unsigned lamp_rs_lock;
+    unsigned lamp_rs_clean;
+    unsigned lamp_ts_sync;
+    unsigned lamp_pat;
+    unsigned lamp_pmt;
+    unsigned lamp_sdt;
+    unsigned lamp_service;
+    unsigned lamp_av;
+    unsigned lamp_output;
     int have_snr;
     int have_pilot_lock;
 } status_t;
@@ -54,6 +72,34 @@ static void usage(const char *argv0)
     fprintf(stderr,
             "usage: %s STATUS.json [--interval-ms N] [--once] [--no-clear]\n",
             argv0);
+}
+
+static void handle_signal(int signum)
+{
+    (void)signum;
+    stop_requested = 1;
+}
+
+static void terminal_enter_status_screen(void)
+{
+    if (terminal_screen_active) {
+        return;
+    }
+
+    printf("\033[?1049h\033[?25l\033[2J\033[H");
+    fflush(stdout);
+    terminal_screen_active = 1;
+}
+
+static void terminal_leave_status_screen(void)
+{
+    if (!terminal_screen_active) {
+        return;
+    }
+
+    printf("\033[0m\033[?25h\033[?1049l");
+    fflush(stdout);
+    terminal_screen_active = 0;
 }
 
 static int parse_unsigned_arg(const char *text, unsigned *out)
@@ -171,6 +217,13 @@ static double json_get_double(const char *json, const char *key, int *present)
     return value;
 }
 
+static unsigned json_get_bool(const char *json, const char *key)
+{
+    const char *p = find_key_value(json, key);
+
+    return p != NULL && strncmp(p, "true", 4u) == 0 ? 1u : 0u;
+}
+
 static void status_from_json(const char *json, status_t *s)
 {
     memset(s, 0, sizeof(*s));
@@ -211,6 +264,20 @@ static void status_from_json(const char *json, status_t *s)
     s->rs_corrected = json_get_uint(json, "rs_corrected");
     s->rs_corrected_bytes = json_get_uint(json, "rs_corrected_bytes");
     s->rs_uncorrectable = json_get_uint(json, "rs_uncorrectable");
+    s->lamp_symbol_rate = json_get_bool(json, "lamp_symbol_rate");
+    s->lamp_guard = json_get_bool(json, "lamp_guard");
+    s->lamp_fec = json_get_bool(json, "lamp_fec");
+    s->lamp_ofdm_sync = json_get_bool(json, "lamp_ofdm_sync");
+    s->lamp_inner_fec = json_get_bool(json, "lamp_inner_fec");
+    s->lamp_rs_lock = json_get_bool(json, "lamp_rs_lock");
+    s->lamp_rs_clean = json_get_bool(json, "lamp_rs_clean");
+    s->lamp_ts_sync = json_get_bool(json, "lamp_ts_sync");
+    s->lamp_pat = json_get_bool(json, "lamp_pat");
+    s->lamp_pmt = json_get_bool(json, "lamp_pmt");
+    s->lamp_sdt = json_get_bool(json, "lamp_sdt");
+    s->lamp_service = json_get_bool(json, "lamp_service");
+    s->lamp_av = json_get_bool(json, "lamp_av");
+    s->lamp_output = json_get_bool(json, "lamp_output");
 }
 
 static const char *text_or_dash(const char *text)
@@ -239,6 +306,11 @@ static void bar(char *out, size_t out_len, unsigned value)
     out[pos] = '\0';
 }
 
+static void lamp(const char *label, unsigned on)
+{
+    printf("  %s%-13s\033[0m", on ? "\033[32m[OK] " : "\033[31m[--] ", label);
+}
+
 static void print_status(const char *path, const status_t *s, int clear_screen)
 {
     char ssi_bar[32];
@@ -264,7 +336,7 @@ static void print_status(const char *path, const status_t *s, int clear_screen)
     bar(sqi_bar, sizeof(sqi_bar), s->sqi);
 
     if (clear_screen) {
-        printf("\033[H\033[J");
+        printf("\033[H\033[2J");
     }
 
     printf("DVB-T receiver status  %s\n", stamp);
@@ -275,6 +347,27 @@ static void print_status(const char *path, const status_t *s, int clear_screen)
            updated_stamp,
            text_or_dash(s->stage),
            s->input_samples);
+
+    printf("Pipeline lamps\n");
+    lamp("symbol-rate", s->lamp_symbol_rate);
+    lamp("guard", s->lamp_guard);
+    lamp("FEC", s->lamp_fec);
+    lamp("OFDM/pilot", s->lamp_ofdm_sync);
+    printf("\n");
+    lamp("inner-FEC", s->lamp_inner_fec);
+    lamp("RS lock", s->lamp_rs_lock);
+    lamp("RS clean", s->lamp_rs_clean);
+    lamp("TS sync", s->lamp_ts_sync);
+    printf("\n");
+    lamp("PAT", s->lamp_pat);
+    lamp("PMT", s->lamp_pmt);
+    lamp("SDT", s->lamp_sdt);
+    lamp("service", s->lamp_service);
+    printf("\n");
+    lamp("A/V PID", s->lamp_av);
+    lamp("output", s->lamp_output);
+    printf("\n\n");
+
     printf("Signal\n");
     printf("  lock: %-3s  quality: %3u%%",
            s->locked ? "yes" : "no",
@@ -375,14 +468,22 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    for (;;) {
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    if (clear_screen && !once) {
+        terminal_enter_status_screen();
+    }
+
+    while (!stop_requested) {
         char *json = read_file(path);
 
         if (json == NULL || json[0] == '\0') {
             if (clear_screen) {
-                printf("\033[H\033[J");
+                printf("\033[H\033[2J");
             }
             printf("Waiting for status file: %s\n", path);
+            printf("\nPress Ctrl-C to exit.\n");
             fflush(stdout);
             free(json);
         } else {
@@ -399,5 +500,6 @@ int main(int argc, char **argv)
         sleep_ms(interval_ms);
     }
 
+    terminal_leave_status_screen();
     return 0;
 }

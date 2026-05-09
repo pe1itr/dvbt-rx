@@ -15,6 +15,7 @@ add_executable(rbdvbt_rx
     src/dvbt_2k_model.c
     src/dvbt_outer.c
     src/iq_input.c
+    src/pipeline.c
     src/probe_constellation.c
     src/receiver.c
 )
@@ -22,12 +23,20 @@ add_executable(rbdvbt_rx
 target_include_directories(rbdvbt_rx PRIVATE include)
 
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
+find_package(X11)
 pkg_check_modules(FFTW3F REQUIRED fftw3f)
 
 target_include_directories(rbdvbt_rx PRIVATE ${FFTW3F_INCLUDE_DIRS})
-target_link_libraries(rbdvbt_rx PRIVATE m ${FFTW3F_LIBRARIES})
+target_link_libraries(rbdvbt_rx PRIVATE m ${FFTW3F_LIBRARIES} Threads::Threads)
+if(X11_FOUND)
+    target_compile_definitions(rbdvbt_rx PRIVATE RBDVBT_HAVE_X11=1)
+    target_include_directories(rbdvbt_rx PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(rbdvbt_rx PRIVATE ${X11_LIBRARIES})
+endif()
 
 target_compile_options(rbdvbt_rx PRIVATE
+    -O3
     -Wall
     -Wextra
     -Wpedantic

@@ -15,9 +15,15 @@ typedef struct {
     const char *constellation;
     double snr_db;
     double pilot_lock;
+    double cfo_hz;
+    int32_t bin_shift;
+    int32_t symbol_phase;
     uint64_t input_samples;
     uint32_t lock_quality;
     uint32_t ssi;
+    int wait_video_start;
+    int live_mode;
+    int gui_enabled;
 } rbdvbt_status_context_t;
 
 typedef struct {
@@ -38,6 +44,13 @@ typedef struct {
 void rbdvbt_status_publish_idle(const rbdvbt_status_context_t *status,
                                 const char *stage,
                                 uint64_t input_samples);
+
+void rbdvbt_outer_reset_live_stream(void);
+void rbdvbt_live_health_note_outer(uint32_t packets,
+                                   uint32_t sync_bad,
+                                   uint32_t transport_errors,
+                                   uint32_t cc_errors,
+                                   uint32_t rs_uncorrectable);
 
 int rbdvbt_outer_analyze_inner(const uint8_t *inner,
                                size_t inner_count,

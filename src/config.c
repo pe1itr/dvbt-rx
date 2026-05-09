@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static rbdvbt_log_level_t global_log_level = RBDVBT_LOG_INFO;
+
 static int parse_u32(const char *text, uint32_t *out)
 {
     char *end = NULL;
@@ -38,6 +40,8 @@ static int parse_u64(const char *text, uint64_t *out)
 
 static int parse_symbol_rate(const char *text, rbdvbt_symbol_rate_t *out)
 {
+    uint32_t hz = 0;
+
     if (strcmp(text, "125k") == 0 || strcmp(text, "125ks") == 0) {
         *out = RBDVBT_SR_125K;
     } else if (strcmp(text, "250k") == 0 || strcmp(text, "250ks") == 0) {
@@ -46,6 +50,18 @@ static int parse_symbol_rate(const char *text, rbdvbt_symbol_rate_t *out)
         *out = RBDVBT_SR_333K;
     } else if (strcmp(text, "500k") == 0 || strcmp(text, "500ks") == 0) {
         *out = RBDVBT_SR_500K;
+    } else if (parse_u32(text, &hz) == 0) {
+        if (hz == 125000u) {
+            *out = RBDVBT_SR_125K;
+        } else if (hz == 250000u) {
+            *out = RBDVBT_SR_250K;
+        } else if (hz == 333000u || hz == 333333u) {
+            *out = RBDVBT_SR_333K;
+        } else if (hz == 500000u) {
+            *out = RBDVBT_SR_500K;
+        } else {
+            return -1;
+        }
     } else {
         return -1;
     }
@@ -104,6 +120,25 @@ static int parse_input_format(const char *text, rbdvbt_input_format_t *out)
     return 0;
 }
 
+static int parse_log_level(const char *text, rbdvbt_log_level_t *out)
+{
+    if (strcmp(text, "error") == 0 || strcmp(text, "err") == 0) {
+        *out = RBDVBT_LOG_ERROR;
+    } else if (strcmp(text, "warn") == 0 || strcmp(text, "warning") == 0) {
+        *out = RBDVBT_LOG_WARN;
+    } else if (strcmp(text, "info") == 0) {
+        *out = RBDVBT_LOG_INFO;
+    } else if (strcmp(text, "debug") == 0) {
+        *out = RBDVBT_LOG_DEBUG;
+    } else if (strcmp(text, "trace") == 0) {
+        *out = RBDVBT_LOG_TRACE;
+    } else {
+        return -1;
+    }
+
+    return 0;
+}
+
 int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
 {
     int i;
@@ -117,6 +152,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
     cfg->dvbt_ir = 1;
     cfg->fec = RBDVBT_FEC_1_2;
     cfg->status_period_packets = 100;
+    cfg->log_level = RBDVBT_LOG_INFO;
 
     for (i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -128,12 +164,24 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             cfg->use_stdin = 1;
         } else if (strcmp(arg, "--probe-constellation") == 0) {
             cfg->probe_constellation = 1;
+        } else if (strcmp(arg, "--live") == 0) {
+            cfg->live_mode = 1;
+            cfg->probe_constellation = 1;
+        } else if (strcmp(arg, "--gui") == 0) {
+            cfg->gui = 1;
+            cfg->probe_constellation = 1;
         } else if (strcmp(arg, "--resample-x4") == 0) {
             cfg->resample_x4 = 1;
         } else if (strcmp(arg, "--resample-to-dvbt-rate") == 0) {
             cfg->resample_to_dvbt_rate = 1;
         } else if (strcmp(arg, "--verbose") == 0 || strcmp(arg, "-v") == 0) {
             cfg->verbose = 1;
+            cfg->log_level = RBDVBT_LOG_DEBUG;
+        } else if ((strcmp(arg, "--loglevel") == 0 || strcmp(arg, "--log-level") == 0) && i + 1 < argc) {
+            if (parse_log_level(argv[++i], &cfg->log_level) != 0) {
+                fprintf(stderr, "invalid --loglevel value; expected error, warn, info, debug, or trace\n");
+                return -1;
+            }
         } else if (strcmp(arg, "--sample-rate") == 0 && i + 1 < argc) {
             if (parse_u32(argv[++i], &cfg->sample_rate_hz) != 0) {
                 fprintf(stderr, "invalid --sample-rate value\n");
@@ -141,7 +189,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             }
         } else if ((strcmp(arg, "--sr") == 0 || strcmp(arg, "--symbol-rate") == 0) && i + 1 < argc) {
             if (parse_symbol_rate(argv[++i], &cfg->symbol_rate) != 0) {
-                fprintf(stderr, "invalid --sr value; expected 125k, 250k, 333k, or 500k\n");
+                fprintf(stderr, "invalid --sr value; expected 125k, 250k, 333k, 500k, or Hz 125000, 250000, 333000, 333333, 500000\n");
                 return -1;
             }
         } else if (strcmp(arg, "--gi") == 0 && i + 1 < argc) {
@@ -180,6 +228,13 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
                 fprintf(stderr, "invalid --probe-symbols value\n");
                 return -1;
             }
+        } else if ((strcmp(arg, "--live-symbols") == 0 ||
+                    strcmp(arg, "--frontend-symbols") == 0) && i + 1 < argc) {
+            if (parse_u32(argv[++i], &cfg->live_frontend_symbols) != 0 ||
+                cfg->live_frontend_symbols == 0) {
+                fprintf(stderr, "invalid --live-symbols value\n");
+                return -1;
+            }
         } else if (strcmp(arg, "--constellation-out") == 0 && i + 1 < argc) {
             cfg->constellation_out = argv[++i];
         } else if (strcmp(arg, "--constellation-svg") == 0 && i + 1 < argc) {
@@ -192,6 +247,8 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             cfg->ts_out = argv[++i];
         } else if (strcmp(arg, "--stdout-ts") == 0) {
             cfg->ts_out = "-";
+        } else if (strcmp(arg, "--wait-video-start") == 0) {
+            cfg->wait_video_start = 1;
         } else if (strcmp(arg, "--status-json") == 0 && i + 1 < argc) {
             cfg->status_json = argv[++i];
         } else if (strcmp(arg, "--status-period-packets") == 0 && i + 1 < argc) {
@@ -272,24 +329,50 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
         fprintf(stderr, "missing required --sr\n");
         return -1;
     }
-    if (cfg->probe_constellation && cfg->constellation_out == NULL) {
-        fprintf(stderr, "missing required --constellation-out for --probe-constellation\n");
-        return -1;
-    }
     if (cfg->resample_x4 && cfg->resample_to_dvbt_rate) {
         fprintf(stderr, "--resample-x4 and --resample-to-dvbt-rate are mutually exclusive\n");
         return -1;
     }
 
+    rbdvbt_log_set_level(cfg->log_level);
     return 0;
 }
 
 void rbdvbt_print_usage(const char *argv0)
 {
     fprintf(stderr,
-            "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|250k|333k|500k --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|-\n"
+            "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|250k|333k|500k|125000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|- --wait-video-start\n"
+            "       --gui --live-symbols N --loglevel error|warn|info|debug|trace\n"
             "       use --ts-out - or --stdout-ts to write MPEG-TS packets to stdout; use --status-json status.json for receiver status]\n",
             argv0);
+}
+
+int rbdvbt_log_enabled(rbdvbt_log_level_t level)
+{
+    return level <= global_log_level;
+}
+
+void rbdvbt_log_set_level(rbdvbt_log_level_t level)
+{
+    global_log_level = level;
+}
+
+const char *rbdvbt_log_level_name(rbdvbt_log_level_t level)
+{
+    switch (level) {
+    case RBDVBT_LOG_ERROR:
+        return "error";
+    case RBDVBT_LOG_WARN:
+        return "warn";
+    case RBDVBT_LOG_INFO:
+        return "info";
+    case RBDVBT_LOG_DEBUG:
+        return "debug";
+    case RBDVBT_LOG_TRACE:
+        return "trace";
+    }
+
+    return "unknown";
 }
 
 const char *rbdvbt_input_format_name(rbdvbt_input_format_t fmt)

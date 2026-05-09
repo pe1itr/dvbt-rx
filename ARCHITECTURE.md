@@ -84,6 +84,254 @@ De naam `--probe-constellation` is historisch gegroeid. In de huidige code is
 dit niet meer alleen een probe; het is de route waarin de volledige werkende
 demodulatieketen zit.
 
+## Voorgenomen Async Pipeline
+
+Voor een volgende refactor splitsen we de receiver in vier stateful
+verwerkingsblokken met FIFO's op semantische datagrenzen. Dit volgt dezelfde
+hoofdles als LeanDVB: buffers horen op plekken waar de datavorm verandert, niet
+midden in een feedback loop.
+
+```text
+SDR / IQ input
+  -> optionele FIFO0: IQ ringbuffer
+  -> Block 1: IQ -> OFDM/QAM demap
+  -> FIFO1: soft-bit/cell batches
+  -> Block 2: inner deinterleaver + depuncture + Viterbi
+  -> FIFO2: Viterbi decoded byte stream
+  -> Block 3: outer deinterleaver + Reed-Solomon + derandomizer
+  -> FIFO3: complete 188-byte MPEG-TS packets
+  -> Block 4: TS writer / streamer / analyzer
+  -> FIFO4: optionele output/status queue
+```
+
+De kernrelatie tussen blokken is:
+
+```text
+Block 1 draait continu
+Block 2 consumeert FIFO1
+Block 3 consumeert FIFO2
+Block 4 consumeert FIFO3
+```
+
+### Block 1: IQ naar demapper output
+
+Block 1 is een stateful producer. Als er eenmaal lock is, verwerkt hij volgende
+IQ chunks vanuit zijn bestaande tracking-state. Hij mag dus niet per chunk
+opnieuw beginnen met volledige acquisitie.
+
+Interne state van Block 1 blijft prive:
+
+```text
+sync_state: SEARCHING / LOCKED / HOLDOVER / LOST
+sample_index
+symbol_index
+FFT window position
+carrier frequency offset / PLL state
+sample timing offset
+guard interval alignment
+channel estimate / equalizer taps
+TPS/config state
+frame counters
+confidence metrics
+```
+
+De deterministische vorm is:
+
+```text
+Block1.process(iq_chunk, state_in) -> fifo1_items + state_out
+```
+
+Zolang de IQ-stream continu is:
+
+```text
+LOCKED state + volgende IQ chunk -> volgende OFDM symbols -> demap -> FIFO1
+```
+
+Een klein kwaliteitsverlies kan via `HOLDOVER` lopen zonder directe pipeline
+flush. Een echte IQ-discontinuiteit of langdurig lockverlies gaat naar `LOST`,
+verhoogt `generation_id` en triggert downstream reset.
+
+FIFO1 bevat geen anonieme losse bits maar records:
+
+```text
+Fifo1Item {
+  generation_id
+  tps_config
+  first_sample_index
+  first_symbol_index
+  symbol_count
+  soft_bits
+  quality_flags
+}
+```
+
+### Block 2: inner FEC
+
+Block 2 consumeert FIFO1 en doet:
+
+```text
+inner bit/symbol deinterleaver
+  -> depuncturing
+  -> soft Viterbi
+  -> FIFO2
+```
+
+Block 2 houdt zijn eigen state lokaal:
+
+```text
+inner_deinterleaver buffers
+puncturing phase
+Viterbi trellis/path state
+bit/byte alignment
+```
+
+FIFO2 bevat byte-georienteerde data:
+
+```text
+Fifo2Item {
+  generation_id
+  byte_offset
+  bytes
+  viterbi_metric
+  ber_estimate
+  flags
+}
+```
+
+Bij een nieuwe `generation_id`, `DISCONTINUITY` of incompatible config reset
+Block 2 zijn interne buffers voordat nieuwe data wordt geaccepteerd.
+
+### Block 3: outer FEC en derandomizer
+
+Block 3 consumeert FIFO2 en doet:
+
+```text
+MPEG/RS byte sync indien nodig
+  -> outer byte deinterleaver
+  -> Reed-Solomon RS(204,188)
+  -> energy derandomizer
+  -> FIFO3
+```
+
+De volgorde is bewust:
+
+```text
+outer deinterleaver -> Reed-Solomon -> derandomizer
+```
+
+Dit is ook de praktische volgorde zoals LeanDVB die gebruikt voor zijn
+DVB-S-keten.
+
+Block 3 houdt lokaal:
+
+```text
+TS/RS alignment
+outer_deinterleaver memory
+RS decoder state
+derandomizer PRBS phase
+packet counter
+```
+
+FIFO3 is de schoonste grens in de keten:
+
+```text
+TsPacket {
+  generation_id
+  packet_index
+  bytes[188]
+  rs_corrected_errors
+  flags
+}
+```
+
+### Block 4: TS sink
+
+Block 4 doet geen DVB-FEC meer. Het consumeert complete TS packets uit FIFO3 en
+handelt output en analyse af:
+
+```text
+continuity checks
+file writer
+UDP streamer
+TS analyzer
+status/statistics
+```
+
+FIFO4 is optioneel. Gebruik die alleen als de sink zelf ook asynchroon moet zijn,
+bijvoorbeeld voor een writer, GUI of netwerkstream die los van TS-validatie mag
+lopen.
+
+### Informatiebus
+
+Naast payload-FIFO's komt er een kleine informatiebus voor expliciete events en
+status. De bus deelt geen interne algoritme-state, maar alleen informatie die
+andere blokken nodig hebben om correct te resetten, monitoren of rapporteren.
+
+Minimale events:
+
+```text
+CONFIG_CHANGED
+SYNC_SEARCHING
+SYNC_LOCKED
+SYNC_HOLDOVER
+SYNC_LOST
+GENERATION_CHANGED
+PIPELINE_FLUSH
+FIFO_LEVEL
+FIFO_OVERRUN
+FIFO_UNDERRUN
+DROPOUT
+ERROR_RATE_UPDATE
+```
+
+Niet via de bus delen:
+
+```text
+PLL internals
+equalizer taps
+Viterbi survivor paths
+outer deinterleaver memory
+Reed-Solomon syndrome internals
+derandomizer shift register
+```
+
+### Backpressure en gaten
+
+Alle FIFO's zijn bounded. Onbeperkt bufferen maskeert alleen dat realtime
+verwerking niet wordt bijgehouden.
+
+Voor offline/file input:
+
+```text
+FIFO vol  -> producer wacht
+FIFO leeg -> consumer wacht
+```
+
+Voor live SDR:
+
+```text
+FIFO0/FIFO1 overrun
+  -> IQ_OVERRUN of FIFO_OVERRUN event
+  -> DISCONTINUITY markeren
+  -> generation_id++
+  -> downstream pipeline flush
+  -> Block 1 naar HOLDOVER of LOST
+```
+
+Een gat in FIFO1 mag nooit stilzwijgend door inner/outer FEC lopen. Downstream
+consumeert alleen records waarvoor geldt:
+
+```text
+zelfde generation_id
+symbol_index/byte_offset sluit aan
+config is compatible
+geen DISCONTINUITY flag
+```
+
+Als Block 1 te weinig levert, blijven Block 2-4 idle en publiceert de bus
+underrun/starving status. Dat is normaal bij acquisitie, zwak signaal of
+offline input die langzamer binnenkomt.
+
 ## Automatische Parameterdetectie
 
 `--gi auto` gebruikt een praktische CP-correlatiescan. De receiver vergelijkt

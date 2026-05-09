@@ -6,10 +6,18 @@
 
 #include <fftw3.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
+
+#ifdef RBDVBT_HAVE_X11
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -22,6 +30,151 @@ typedef struct {
     float re;
     float im;
 } complexf_t;
+
+typedef struct {
+    int valid;
+    uint32_t sample_rate_hz;
+    rbdvbt_symbol_rate_t symbol_rate;
+    rbdvbt_guard_interval_t guard_interval;
+    uint32_t fft_size;
+    uint32_t symbol_len;
+    uint32_t chunk_output_samples;
+    uint32_t start;
+    double cfo_hz;
+    double cp_score;
+} live_sync_hint_t;
+
+static live_sync_hint_t live_sync_hint;
+static int live_symbol_continuity_ok;
+static size_t live_ofdm_prefix_count;
+
+#define GRDVBT_ML_SYNC_RHO 0.9090909090909091
+
+typedef struct {
+    int valid;
+    double pilot_lock;
+    double snr_db;
+    double cfo_hz;
+    int32_t bin_shift;
+    int32_t symbol_phase;
+} live_status_hold_t;
+
+static live_status_hold_t live_status_hold;
+
+typedef struct {
+    int valid;
+    uint32_t sample_rate_hz;
+    uint32_t symbol_len;
+    complexf_t *tail;
+    size_t tail_count;
+    size_t tail_cap;
+} live_ofdm_buffer_state_t;
+
+static live_ofdm_buffer_state_t live_ofdm_buffer_state;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t not_empty;
+    pthread_t thread;
+    int started;
+    int eof;
+    rbdvbt_input_format_t format;
+    complexf_t *items;
+    size_t cap;
+    size_t head;
+    size_t count;
+    uint64_t overrun_samples;
+} live_iq_ring_t;
+
+static live_iq_ring_t live_iq_ring = {
+    PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_COND_INITIALIZER,
+    0,
+    0,
+    0,
+    RBDVBT_INPUT_S16,
+    NULL,
+    0u,
+    0u,
+    0u,
+    0u
+};
+
+#define GUI_CONSTELLATION_MAX_POINTS 6000u
+#define GUI_WINDOW_X 80u
+#define GUI_WINDOW_Y 80u
+#define GUI_WINDOW_GAP 30u
+#define GUI_CONSTELLATION_W 420u
+#define GUI_CONSTELLATION_H 420u
+#define GUI_FIFO_HISTORY_POINTS 720u
+#define GUI_FIFO_W 640u
+#define GUI_FIFO_H 260u
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    pthread_t thread;
+    int enabled;
+    int started;
+    int stop;
+    int have_points;
+    complexf_t *points;
+    size_t point_count;
+    char source[32];
+    double snr_db;
+    double pilot_lock;
+    double cfo_hz;
+} gui_constellation_state_t;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    pthread_t thread;
+    int enabled;
+    int started;
+    int stop;
+    int updated;
+    uint32_t depth;
+    uint32_t queued;
+    uint32_t processing;
+    uint32_t capacity;
+    uint32_t history[GUI_FIFO_HISTORY_POINTS];
+    size_t history_count;
+    size_t history_head;
+} gui_fifo_state_t;
+
+static gui_constellation_state_t gui_constellation = {
+    PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_COND_INITIALIZER,
+    0,
+    0,
+    0,
+    0,
+    0,
+    NULL,
+    0u,
+    "",
+    0.0,
+    0.0,
+    0.0
+};
+
+static gui_fifo_state_t gui_fifo = {
+    PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_COND_INITIALIZER,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0u,
+    0u,
+    0u,
+    0u,
+    {0u},
+    0u,
+    0u
+};
 
 static complexf_t c_add(complexf_t a, complexf_t b)
 {
@@ -50,6 +203,618 @@ static complexf_t c_conj(complexf_t a)
 static float c_abs2(complexf_t a)
 {
     return a.re * a.re + a.im * a.im;
+}
+
+static double monotonic_seconds(void)
+{
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+}
+
+#ifdef RBDVBT_HAVE_X11
+static unsigned long gui_alloc_color(Display *display, int screen, const char *name, unsigned long fallback)
+{
+    XColor exact;
+    XColor color;
+
+    if (XAllocNamedColor(display, DefaultColormap(display, screen), name, &color, &exact)) {
+        return color.pixel;
+    }
+    return fallback;
+}
+
+static int gui_plot_coord(float value, int span)
+{
+    const double scale = 1.6;
+    double x = ((double)value / scale) * ((double)span * 0.43) + ((double)span * 0.5);
+
+    if (x < 0.0) {
+        return 0;
+    }
+    if (x > (double)(span - 1)) {
+        return span - 1;
+    }
+    return (int)(x + 0.5);
+}
+
+static void gui_draw_cross(Display *display, Drawable drawable, GC gc, int x, int y, int radius)
+{
+    XDrawLine(display, drawable, gc, x - radius, y, x + radius, y);
+    XDrawLine(display, drawable, gc, x, y - radius, x, y + radius);
+}
+
+static void gui_set_window_geometry(Display *display,
+                                    Window window,
+                                    int x,
+                                    int y,
+                                    unsigned int width,
+                                    unsigned int height)
+{
+    XSizeHints hints;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.flags = USPosition | PPosition | USSize | PSize;
+    hints.x = x;
+    hints.y = y;
+    hints.width = (int)width;
+    hints.height = (int)height;
+    XSetWMNormalHints(display, window, &hints);
+}
+
+static void *gui_constellation_thread_main(void *arg)
+{
+    Display *display;
+    int screen;
+    Window window;
+    GC gc;
+    Pixmap pixmap;
+    unsigned int width = GUI_CONSTELLATION_W;
+    unsigned int height = GUI_CONSTELLATION_H;
+    unsigned long black;
+    unsigned long green;
+    unsigned long grid;
+    unsigned long white;
+    unsigned long yellow;
+    Atom wm_delete;
+    complexf_t *points = NULL;
+    size_t points_cap = 0u;
+
+    (void)arg;
+
+    display = XOpenDisplay(NULL);
+    if (display == NULL) {
+        fprintf(stderr, "[gui] unable to open X11 display; constellation GUI disabled\n");
+        pthread_mutex_lock(&gui_constellation.mutex);
+        gui_constellation.enabled = 0;
+        gui_constellation.started = 0;
+        pthread_mutex_unlock(&gui_constellation.mutex);
+        return NULL;
+    }
+
+    screen = DefaultScreen(display);
+    black = BlackPixel(display, screen);
+    white = WhitePixel(display, screen);
+    green = gui_alloc_color(display, screen, "lime green", white);
+    grid = gui_alloc_color(display, screen, "gray25", white);
+    yellow = gui_alloc_color(display, screen, "gold", white);
+
+    window = XCreateSimpleWindow(display,
+                                 RootWindow(display, screen),
+                                 GUI_WINDOW_X,
+                                 GUI_WINDOW_Y,
+                                 width,
+                                 height,
+                                 1,
+                                 white,
+                                 black);
+    gui_set_window_geometry(display, window, GUI_WINDOW_X, GUI_WINDOW_Y, width, height);
+    XStoreName(display, window, "rbdvbt_rx QPSK constellation");
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask | KeyPressMask);
+    wm_delete = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    XSetWMProtocols(display, window, &wm_delete, 1);
+    XMapWindow(display, window);
+    XMoveWindow(display, window, GUI_WINDOW_X, GUI_WINDOW_Y);
+    gc = XCreateGC(display, window, 0, NULL);
+    pixmap = XCreatePixmap(display, window, width, height, DefaultDepth(display, screen));
+
+    while (1) {
+        struct timespec deadline;
+        size_t point_count;
+        char source[32];
+        double snr_db;
+        double pilot_lock;
+        double cfo_hz;
+
+        {
+            struct timeval now;
+
+            gettimeofday(&now, NULL);
+            deadline.tv_sec = now.tv_sec;
+            deadline.tv_nsec = (long)now.tv_usec * 1000L + 50000000L;
+        }
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+
+        pthread_mutex_lock(&gui_constellation.mutex);
+        while (!gui_constellation.stop && !gui_constellation.have_points) {
+            if (pthread_cond_timedwait(&gui_constellation.cond,
+                                       &gui_constellation.mutex,
+                                       &deadline) != 0) {
+                break;
+            }
+        }
+        if (gui_constellation.stop) {
+            pthread_mutex_unlock(&gui_constellation.mutex);
+            break;
+        }
+        point_count = gui_constellation.point_count;
+        if (point_count > points_cap) {
+            complexf_t *new_points = realloc(points, point_count * sizeof(*new_points));
+
+            if (new_points != NULL) {
+                points = new_points;
+                points_cap = point_count;
+            } else {
+                point_count = 0u;
+            }
+        }
+        if (point_count > 0u && points != NULL) {
+            memcpy(points, gui_constellation.points, point_count * sizeof(*points));
+        }
+        snr_db = gui_constellation.snr_db;
+        pilot_lock = gui_constellation.pilot_lock;
+        cfo_hz = gui_constellation.cfo_hz;
+        snprintf(source, sizeof(source), "%s", gui_constellation.source);
+        gui_constellation.have_points = 0;
+        pthread_mutex_unlock(&gui_constellation.mutex);
+
+        while (XPending(display) > 0) {
+            XEvent event;
+
+            XNextEvent(display, &event);
+            if (event.type == ClientMessage && (Atom)event.xclient.data.l[0] == wm_delete) {
+                pthread_mutex_lock(&gui_constellation.mutex);
+                gui_constellation.enabled = 0;
+                gui_constellation.stop = 1;
+                pthread_mutex_unlock(&gui_constellation.mutex);
+                point_count = 0u;
+                break;
+            }
+            if (event.type == ConfigureNotify) {
+                XConfigureEvent *cfg = &event.xconfigure;
+
+                if (cfg->width > 32 && cfg->height > 32 &&
+                    ((unsigned int)cfg->width != width || (unsigned int)cfg->height != height)) {
+                    width = (unsigned int)cfg->width;
+                    height = (unsigned int)cfg->height;
+                    XFreePixmap(display, pixmap);
+                    pixmap = XCreatePixmap(display, window, width, height, DefaultDepth(display, screen));
+                }
+            }
+        }
+        if (gui_constellation.stop) {
+            break;
+        }
+
+        XSetForeground(display, gc, black);
+        XFillRectangle(display, pixmap, gc, 0, 0, width, height);
+        XSetForeground(display, gc, grid);
+        XDrawLine(display, pixmap, gc, (int)width / 2, 0, (int)width / 2, (int)height);
+        XDrawLine(display, pixmap, gc, 0, (int)height / 2, (int)width, (int)height / 2);
+
+        XSetForeground(display, gc, white);
+        gui_draw_cross(display, pixmap, gc,
+                       gui_plot_coord(0.70710678f, (int)width),
+                       (int)height - 1 - gui_plot_coord(0.70710678f, (int)height),
+                       5);
+        gui_draw_cross(display, pixmap, gc,
+                       gui_plot_coord(-0.70710678f, (int)width),
+                       (int)height - 1 - gui_plot_coord(0.70710678f, (int)height),
+                       5);
+        gui_draw_cross(display, pixmap, gc,
+                       gui_plot_coord(0.70710678f, (int)width),
+                       (int)height - 1 - gui_plot_coord(-0.70710678f, (int)height),
+                       5);
+        gui_draw_cross(display, pixmap, gc,
+                       gui_plot_coord(-0.70710678f, (int)width),
+                       (int)height - 1 - gui_plot_coord(-0.70710678f, (int)height),
+                       5);
+
+        XSetForeground(display, gc, green);
+        for (size_t i = 0; i < point_count; ++i) {
+            int x = gui_plot_coord(points[i].re, (int)width);
+            int y = (int)height - 1 - gui_plot_coord(points[i].im, (int)height);
+
+            XDrawPoint(display, pixmap, gc, x, y);
+        }
+
+        {
+            char label[128];
+
+            snprintf(label,
+                     sizeof(label),
+                     "%s  points=%zu  SNR=%.1fdB  lock=%.3f  CFO=%.1fHz",
+                     source[0] != '\0' ? source : "constellation",
+                     point_count,
+                     snr_db,
+                     pilot_lock,
+                     cfo_hz);
+            XSetForeground(display, gc, yellow);
+            XDrawString(display, pixmap, gc, 10, 18, label, (int)strlen(label));
+        }
+
+        XCopyArea(display, pixmap, window, gc, 0, 0, width, height, 0, 0);
+        XFlush(display);
+    }
+
+    free(points);
+    XFreePixmap(display, pixmap);
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+    XCloseDisplay(display);
+
+    pthread_mutex_lock(&gui_constellation.mutex);
+    gui_constellation.started = 0;
+    gui_constellation.enabled = 0;
+    pthread_mutex_unlock(&gui_constellation.mutex);
+    return NULL;
+}
+
+static void *gui_fifo_thread_main(void *arg)
+{
+    Display *display;
+    int screen;
+    Window window;
+    GC gc;
+    Pixmap pixmap;
+    unsigned int width = GUI_FIFO_W;
+    unsigned int height = GUI_FIFO_H;
+    unsigned long black;
+    unsigned long green;
+    unsigned long grid;
+    unsigned long white;
+    unsigned long yellow;
+    Atom wm_delete;
+    uint32_t history[GUI_FIFO_HISTORY_POINTS];
+    size_t history_count = 0u;
+    uint32_t depth = 0u;
+    uint32_t queued = 0u;
+    uint32_t processing = 0u;
+    uint32_t capacity = 1u;
+
+    (void)arg;
+
+    display = XOpenDisplay(NULL);
+    if (display == NULL) {
+        fprintf(stderr, "[gui] unable to open X11 display; FIFO1 GUI disabled\n");
+        pthread_mutex_lock(&gui_fifo.mutex);
+        gui_fifo.enabled = 0;
+        gui_fifo.started = 0;
+        pthread_mutex_unlock(&gui_fifo.mutex);
+        return NULL;
+    }
+
+    screen = DefaultScreen(display);
+    black = BlackPixel(display, screen);
+    white = WhitePixel(display, screen);
+    green = gui_alloc_color(display, screen, "lime green", white);
+    grid = gui_alloc_color(display, screen, "gray25", white);
+    yellow = gui_alloc_color(display, screen, "gold", white);
+
+    window = XCreateSimpleWindow(display,
+                                 RootWindow(display, screen),
+                                 GUI_WINDOW_X + GUI_CONSTELLATION_W + GUI_WINDOW_GAP,
+                                 GUI_WINDOW_Y,
+                                 width,
+                                 height,
+                                 1,
+                                 white,
+                                 black);
+    gui_set_window_geometry(display,
+                            window,
+                            GUI_WINDOW_X + GUI_CONSTELLATION_W + GUI_WINDOW_GAP,
+                            GUI_WINDOW_Y,
+                            width,
+                            height);
+    XStoreName(display, window, "rbdvbt_rx FIFO1 depth");
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask | KeyPressMask);
+    wm_delete = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    XSetWMProtocols(display, window, &wm_delete, 1);
+    XMapWindow(display, window);
+    XMoveWindow(display, window, GUI_WINDOW_X + GUI_CONSTELLATION_W + GUI_WINDOW_GAP, GUI_WINDOW_Y);
+    gc = XCreateGC(display, window, 0, NULL);
+    pixmap = XCreatePixmap(display, window, width, height, DefaultDepth(display, screen));
+
+    while (1) {
+        struct timespec deadline;
+
+        {
+            struct timeval now;
+
+            gettimeofday(&now, NULL);
+            deadline.tv_sec = now.tv_sec;
+            deadline.tv_nsec = (long)now.tv_usec * 1000L + 100000000L;
+        }
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+
+        pthread_mutex_lock(&gui_fifo.mutex);
+        while (!gui_fifo.stop && !gui_fifo.updated) {
+            if (pthread_cond_timedwait(&gui_fifo.cond,
+                                       &gui_fifo.mutex,
+                                       &deadline) != 0) {
+                break;
+            }
+        }
+        if (gui_fifo.stop) {
+            pthread_mutex_unlock(&gui_fifo.mutex);
+            break;
+        }
+        depth = gui_fifo.depth;
+        queued = gui_fifo.queued;
+        processing = gui_fifo.processing;
+        capacity = gui_fifo.capacity != 0u ? gui_fifo.capacity : 1u;
+        history_count = gui_fifo.history_count;
+        if (history_count > GUI_FIFO_HISTORY_POINTS) {
+            history_count = GUI_FIFO_HISTORY_POINTS;
+        }
+        for (size_t i = 0; i < history_count; ++i) {
+            size_t pos = (gui_fifo.history_head + GUI_FIFO_HISTORY_POINTS - history_count + i) %
+                GUI_FIFO_HISTORY_POINTS;
+
+            history[i] = gui_fifo.history[pos];
+        }
+        gui_fifo.updated = 0;
+        pthread_mutex_unlock(&gui_fifo.mutex);
+
+        while (XPending(display) > 0) {
+            XEvent event;
+
+            XNextEvent(display, &event);
+            if (event.type == ClientMessage && (Atom)event.xclient.data.l[0] == wm_delete) {
+                pthread_mutex_lock(&gui_fifo.mutex);
+                gui_fifo.enabled = 0;
+                gui_fifo.stop = 1;
+                pthread_mutex_unlock(&gui_fifo.mutex);
+                break;
+            }
+            if (event.type == ConfigureNotify) {
+                XConfigureEvent *cfg = &event.xconfigure;
+
+                if (cfg->width > 64 && cfg->height > 64 &&
+                    ((unsigned int)cfg->width != width || (unsigned int)cfg->height != height)) {
+                    width = (unsigned int)cfg->width;
+                    height = (unsigned int)cfg->height;
+                    XFreePixmap(display, pixmap);
+                    pixmap = XCreatePixmap(display, window, width, height, DefaultDepth(display, screen));
+                }
+            }
+        }
+        if (gui_fifo.stop) {
+            break;
+        }
+
+        XSetForeground(display, gc, black);
+        XFillRectangle(display, pixmap, gc, 0, 0, width, height);
+
+        XSetForeground(display, gc, grid);
+        for (unsigned int i = 1u; i < 4u; ++i) {
+            int y = (int)((height - 34u) * i / 4u) + 24;
+            XDrawLine(display, pixmap, gc, 0, y, (int)width, y);
+        }
+        XDrawRectangle(display, pixmap, gc, 0, 24, width > 1u ? width - 1u : 0u, height > 35u ? height - 35u : 0u);
+
+        if (history_count > 1u) {
+            unsigned int graph_h = height > 36u ? height - 36u : 1u;
+            unsigned int graph_y = 24u;
+            double x_scale = history_count > 1u ?
+                (double)(width - 1u) / (double)(history_count - 1u) :
+                1.0;
+
+            XSetForeground(display, gc, green);
+            for (size_t i = 1u; i < history_count; ++i) {
+                double prev_fill = (double)history[i - 1u] / (double)capacity;
+                double fill = (double)history[i] / (double)capacity;
+                int x0 = (int)((double)(i - 1u) * x_scale + 0.5);
+                int x1 = (int)((double)i * x_scale + 0.5);
+                int y0;
+                int y1;
+
+                if (prev_fill > 1.0) {
+                    prev_fill = 1.0;
+                }
+                if (fill > 1.0) {
+                    fill = 1.0;
+                }
+                y0 = (int)(graph_y + (double)graph_h * (1.0 - prev_fill) + 0.5);
+                y1 = (int)(graph_y + (double)graph_h * (1.0 - fill) + 0.5);
+                XDrawLine(display, pixmap, gc, x0, y0, x1, y1);
+            }
+        }
+
+        {
+            char label[128];
+            double fill_pct = capacity != 0u ? (100.0 * (double)depth / (double)capacity) : 0.0;
+
+            if (fill_pct > 100.0) {
+                fill_pct = 100.0;
+            }
+            snprintf(label,
+                     sizeof(label),
+                     "FIFO1 load: %u / %u  queued=%u processing=%u  %.0f%%",
+                     depth,
+                     capacity,
+                     queued,
+                     processing,
+                     fill_pct);
+            XSetForeground(display, gc, yellow);
+            XDrawString(display, pixmap, gc, 10, 18, label, (int)strlen(label));
+        }
+
+        XCopyArea(display, pixmap, window, gc, 0, 0, width, height, 0, 0);
+        XFlush(display);
+    }
+
+    XFreePixmap(display, pixmap);
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+    XCloseDisplay(display);
+
+    pthread_mutex_lock(&gui_fifo.mutex);
+    gui_fifo.started = 0;
+    gui_fifo.enabled = 0;
+    pthread_mutex_unlock(&gui_fifo.mutex);
+    return NULL;
+}
+#endif
+
+static void gui_fifo_submit(uint32_t queued, uint32_t processing, uint32_t capacity)
+{
+    uint32_t depth = queued + processing;
+
+    pthread_mutex_lock(&gui_fifo.mutex);
+    if (!gui_fifo.enabled) {
+        pthread_mutex_unlock(&gui_fifo.mutex);
+        return;
+    }
+    gui_fifo.depth = depth;
+    gui_fifo.queued = queued;
+    gui_fifo.processing = processing;
+    gui_fifo.capacity = capacity;
+    gui_fifo.history[gui_fifo.history_head] = depth;
+    gui_fifo.history_head = (gui_fifo.history_head + 1u) % GUI_FIFO_HISTORY_POINTS;
+    if (gui_fifo.history_count < GUI_FIFO_HISTORY_POINTS) {
+        gui_fifo.history_count++;
+    }
+    gui_fifo.updated = 1;
+    pthread_cond_signal(&gui_fifo.cond);
+    pthread_mutex_unlock(&gui_fifo.mutex);
+}
+
+static int gui_fifo_start(int enabled)
+{
+    if (!enabled) {
+        return 0;
+    }
+#ifndef RBDVBT_HAVE_X11
+    return 0;
+#else
+    pthread_mutex_lock(&gui_fifo.mutex);
+    if (gui_fifo.started || gui_fifo.enabled) {
+        pthread_mutex_unlock(&gui_fifo.mutex);
+        return 0;
+    }
+    gui_fifo.depth = 0u;
+    gui_fifo.queued = 0u;
+    gui_fifo.processing = 0u;
+    gui_fifo.capacity = 1u;
+    gui_fifo.history_count = 0u;
+    gui_fifo.history_head = 0u;
+    gui_fifo.updated = 1;
+    gui_fifo.stop = 0;
+    gui_fifo.enabled = 1;
+    gui_fifo.started = 1;
+    if (pthread_create(&gui_fifo.thread, NULL, gui_fifo_thread_main, NULL) != 0) {
+        gui_fifo.enabled = 0;
+        gui_fifo.started = 0;
+        pthread_mutex_unlock(&gui_fifo.mutex);
+        fprintf(stderr, "[gui] failed to start FIFO1 GUI thread\n");
+        return -1;
+    }
+    pthread_detach(gui_fifo.thread);
+    pthread_mutex_unlock(&gui_fifo.mutex);
+    return 0;
+#endif
+}
+
+static int gui_constellation_start(int enabled)
+{
+    if (!enabled) {
+        return 0;
+    }
+#ifndef RBDVBT_HAVE_X11
+    static int warned;
+
+    if (!warned) {
+        fprintf(stderr, "[gui] X11 support was not available at build time; --gui ignored\n");
+        warned = 1;
+    }
+    return 0;
+#else
+    pthread_mutex_lock(&gui_constellation.mutex);
+    if (gui_constellation.started || gui_constellation.enabled) {
+        pthread_mutex_unlock(&gui_constellation.mutex);
+        return 0;
+    }
+    gui_constellation.points = malloc(GUI_CONSTELLATION_MAX_POINTS * sizeof(*gui_constellation.points));
+    if (gui_constellation.points == NULL) {
+        pthread_mutex_unlock(&gui_constellation.mutex);
+        fprintf(stderr, "[gui] failed to allocate constellation point buffer\n");
+        return -1;
+    }
+    gui_constellation.point_count = 0u;
+    gui_constellation.have_points = 0;
+    gui_constellation.stop = 0;
+    gui_constellation.enabled = 1;
+    gui_constellation.started = 1;
+    if (pthread_create(&gui_constellation.thread, NULL, gui_constellation_thread_main, NULL) != 0) {
+        gui_constellation.enabled = 0;
+        gui_constellation.started = 0;
+        free(gui_constellation.points);
+        gui_constellation.points = NULL;
+        pthread_mutex_unlock(&gui_constellation.mutex);
+        fprintf(stderr, "[gui] failed to start constellation GUI thread\n");
+        return -1;
+    }
+    pthread_detach(gui_constellation.thread);
+    pthread_mutex_unlock(&gui_constellation.mutex);
+    return 0;
+#endif
+}
+
+static void gui_constellation_submit(const complexf_t *points,
+                                     size_t point_count,
+                                     const char *source,
+                                     double snr_db,
+                                     double pilot_lock,
+                                     double cfo_hz)
+{
+    size_t stride;
+    size_t out_count = 0u;
+
+    if (points == NULL || point_count == 0u) {
+        return;
+    }
+
+    pthread_mutex_lock(&gui_constellation.mutex);
+    if (!gui_constellation.enabled || gui_constellation.points == NULL) {
+        pthread_mutex_unlock(&gui_constellation.mutex);
+        return;
+    }
+    stride = point_count / GUI_CONSTELLATION_MAX_POINTS;
+    if (stride == 0u) {
+        stride = 1u;
+    }
+    for (size_t i = 0; i < point_count && out_count < GUI_CONSTELLATION_MAX_POINTS; i += stride) {
+        gui_constellation.points[out_count++] = points[i];
+    }
+    gui_constellation.point_count = out_count;
+    snprintf(gui_constellation.source,
+             sizeof(gui_constellation.source),
+             "%s",
+             source != NULL ? source : "constellation");
+    gui_constellation.snr_db = snr_db;
+    gui_constellation.pilot_lock = pilot_lock;
+    gui_constellation.cfo_hz = cfo_hz;
+    gui_constellation.have_points = 1;
+    pthread_cond_signal(&gui_constellation.cond);
+    pthread_mutex_unlock(&gui_constellation.mutex);
 }
 
 static complexf_t c_rotate(complexf_t a, double phase)
@@ -169,10 +934,31 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
     status->constellation = "QPSK";
     status->snr_db = 0.0;
     status->pilot_lock = 0.0;
+    status->cfo_hz = 0.0;
+    status->bin_shift = 0;
+    status->symbol_phase = 0;
     status->input_samples = 0u;
     status->lock_quality = 0u;
     status->ssi = 0u;
+    status->wait_video_start = cfg->wait_video_start;
+    status->live_mode = cfg->live_mode;
+    status->gui_enabled = cfg->gui;
+
+    if (cfg->live_mode && live_status_hold.valid) {
+        status->pilot_lock = live_status_hold.pilot_lock;
+        status->snr_db = live_status_hold.snr_db;
+        status->cfo_hz = live_status_hold.cfo_hz;
+        status->bin_shift = live_status_hold.bin_shift;
+        status->symbol_phase = live_status_hold.symbol_phase;
+        status->lock_quality = (uint32_t)(live_status_hold.pilot_lock * 100.0 + 0.5);
+        if (status->lock_quality > 100u) {
+            status->lock_quality = 100u;
+        }
+    }
 }
+
+static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples);
+static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_delta);
 
 static int read_probe_samples(const rbdvbt_config_t *cfg,
                               complexf_t **out_samples,
@@ -192,6 +978,10 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
         fprintf(stderr, "failed to allocate probe sample buffer\n");
         return -1;
     }
+    if (cfg->live_mode && live_iq_ring_start(cfg->input_format, (size_t)sample_limit) != 0) {
+        free(samples);
+        return -1;
+    }
 
     rbdvbt_iq_stats_init(stats);
     init_status_context_from_config(cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
@@ -206,15 +996,44 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
             want = (size_t)(sample_limit - count);
         }
 
-        got = rbdvbt_read_iq(stdin, cfg->input_format, block, want);
+        if (cfg->live_mode) {
+            uint64_t overrun_delta = 0u;
+
+            got = live_iq_ring_read(&samples[count], want, &overrun_delta);
+            if (overrun_delta != 0u) {
+                fprintf(stderr,
+                        "[iqring] overrun dropped_samples=%llu\n",
+                        (unsigned long long)overrun_delta);
+            }
+        } else {
+            got = rbdvbt_read_iq(stdin, cfg->input_format, block, want);
+            rbdvbt_iq_stats_update(stats, block, got);
+            for (n = 0; n < got; ++n) {
+                samples[count + n].re = block[n].i;
+                samples[count + n].im = block[n].q;
+            }
+        }
         if (got == 0) {
             break;
         }
 
-        rbdvbt_iq_stats_update(stats, block, got);
-        for (n = 0; n < got; ++n) {
-            samples[count + n].re = block[n].i;
-            samples[count + n].im = block[n].q;
+        if (cfg->live_mode) {
+            rbdvbt_complex_t stats_block[4096];
+            size_t stats_pos = 0u;
+
+            while (stats_pos < got) {
+                size_t stats_n = got - stats_pos;
+
+                if (stats_n > 4096u) {
+                    stats_n = 4096u;
+                }
+                for (n = 0; n < stats_n; ++n) {
+                    stats_block[n].i = samples[count + stats_pos + n].re;
+                    stats_block[n].q = samples[count + stats_pos + n].im;
+                }
+                rbdvbt_iq_stats_update(stats, stats_block, stats_n);
+                stats_pos += stats_n;
+            }
         }
         count += got;
 
@@ -228,6 +1047,135 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
     *out_samples = samples;
     *out_count = count;
     return 0;
+}
+
+static void live_iq_ring_push(const rbdvbt_complex_t *samples, size_t count)
+{
+    size_t n;
+
+    pthread_mutex_lock(&live_iq_ring.mutex);
+    if (live_iq_ring.items == NULL || live_iq_ring.cap == 0u) {
+        pthread_mutex_unlock(&live_iq_ring.mutex);
+        return;
+    }
+
+    if (count > live_iq_ring.cap) {
+        samples += count - live_iq_ring.cap;
+        live_iq_ring.overrun_samples += count - live_iq_ring.cap;
+        count = live_iq_ring.cap;
+    }
+    if (live_iq_ring.count + count > live_iq_ring.cap) {
+        size_t drop = live_iq_ring.count + count - live_iq_ring.cap;
+
+        live_iq_ring.head = (live_iq_ring.head + drop) % live_iq_ring.cap;
+        live_iq_ring.count -= drop;
+        live_iq_ring.overrun_samples += drop;
+    }
+
+    for (n = 0; n < count; ++n) {
+        size_t pos = (live_iq_ring.head + live_iq_ring.count) % live_iq_ring.cap;
+
+        live_iq_ring.items[pos].re = samples[n].i;
+        live_iq_ring.items[pos].im = samples[n].q;
+        live_iq_ring.count++;
+    }
+    pthread_cond_broadcast(&live_iq_ring.not_empty);
+    pthread_mutex_unlock(&live_iq_ring.mutex);
+}
+
+static void *live_iq_ring_reader_main(void *arg)
+{
+    (void)arg;
+
+    for (;;) {
+        rbdvbt_complex_t block[4096];
+        size_t got = rbdvbt_read_iq(stdin, live_iq_ring.format, block, 4096u);
+
+        if (got == 0u) {
+            pthread_mutex_lock(&live_iq_ring.mutex);
+            live_iq_ring.eof = 1;
+            pthread_cond_broadcast(&live_iq_ring.not_empty);
+            pthread_mutex_unlock(&live_iq_ring.mutex);
+            return NULL;
+        }
+        live_iq_ring_push(block, got);
+    }
+}
+
+static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples)
+{
+    size_t cap = chunk_samples * 4u;
+
+    if (cap < chunk_samples + 4096u) {
+        cap = chunk_samples + 4096u;
+    }
+    if (cap < 16384u) {
+        cap = 16384u;
+    }
+
+    pthread_mutex_lock(&live_iq_ring.mutex);
+    if (live_iq_ring.started) {
+        pthread_mutex_unlock(&live_iq_ring.mutex);
+        return 0;
+    }
+
+    live_iq_ring.items = calloc(cap, sizeof(*live_iq_ring.items));
+    if (live_iq_ring.items == NULL) {
+        pthread_mutex_unlock(&live_iq_ring.mutex);
+        fprintf(stderr, "failed to allocate live IQ ring buffer\n");
+        return -1;
+    }
+    live_iq_ring.cap = cap;
+    live_iq_ring.head = 0u;
+    live_iq_ring.count = 0u;
+    live_iq_ring.eof = 0;
+    live_iq_ring.format = format;
+    live_iq_ring.overrun_samples = 0u;
+    live_iq_ring.started = 1;
+    pthread_mutex_unlock(&live_iq_ring.mutex);
+
+    if (pthread_create(&live_iq_ring.thread, NULL, live_iq_ring_reader_main, NULL) != 0) {
+        pthread_mutex_lock(&live_iq_ring.mutex);
+        live_iq_ring.started = 0;
+        free(live_iq_ring.items);
+        live_iq_ring.items = NULL;
+        live_iq_ring.cap = 0u;
+        pthread_mutex_unlock(&live_iq_ring.mutex);
+        fprintf(stderr, "failed to start live IQ reader thread\n");
+        return -1;
+    }
+    pthread_detach(live_iq_ring.thread);
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        fprintf(stderr, "[iqring] started capacity_samples=%zu chunk_samples=%zu\n", cap, chunk_samples);
+    }
+    return 0;
+}
+
+static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_delta)
+{
+    size_t got = 0u;
+    uint64_t overrun_before;
+
+    pthread_mutex_lock(&live_iq_ring.mutex);
+    overrun_before = live_iq_ring.overrun_samples;
+    while (got < want) {
+        while (live_iq_ring.count == 0u && !live_iq_ring.eof) {
+            pthread_cond_wait(&live_iq_ring.not_empty, &live_iq_ring.mutex);
+        }
+        if (live_iq_ring.count == 0u && live_iq_ring.eof) {
+            break;
+        }
+        while (got < want && live_iq_ring.count > 0u) {
+            out[got++] = live_iq_ring.items[live_iq_ring.head];
+            live_iq_ring.head = (live_iq_ring.head + 1u) % live_iq_ring.cap;
+            live_iq_ring.count--;
+        }
+    }
+    if (overrun_delta != NULL) {
+        *overrun_delta = live_iq_ring.overrun_samples - overrun_before;
+    }
+    pthread_mutex_unlock(&live_iq_ring.mutex);
+    return got;
 }
 
 static void remove_dc(complexf_t *samples, size_t count)
@@ -261,6 +1209,39 @@ static double sinc_norm(double x)
 
     return sin(M_PI * x) / (M_PI * x);
 }
+
+typedef struct {
+    int valid;
+    uint32_t input_rate_hz;
+    uint32_t output_rate_hz;
+    double ratio;
+    double next_x;
+    uint64_t output_seq;
+    complexf_t tail[64];
+    size_t tail_count;
+} live_resampler_state_t;
+
+static live_resampler_state_t live_resampler_state;
+static uint64_t live_resampled_chunk_start_abs;
+static size_t live_resampled_chunk_count;
+
+typedef struct {
+    int valid;
+    uint32_t sample_rate_hz;
+    uint32_t symbol_len;
+    uint64_t symbol_seq;
+    uint64_t next_symbol_sample_abs;
+    uint64_t last_symbol_sample_abs;
+    double cfo_hz;
+    int bin_shift;
+    int conjugate;
+    int symbol_phase_mod4;
+    double pilot_lock;
+} live_frontend_cursor_t;
+
+static live_frontend_cursor_t live_frontend_cursor;
+static uint64_t live_soft_next_symbol_seq;
+static const char *live_frontend_sync_mode = "init";
 
 static int resample_sinc_ratio(const complexf_t *in,
                                size_t in_count,
@@ -327,6 +1308,143 @@ static int resample_sinc_ratio(const complexf_t *in,
     return 0;
 }
 
+static int resample_sinc_ratio_live(const complexf_t *in,
+                                    size_t in_count,
+                                    double ratio,
+                                    uint32_t input_rate_hz,
+                                    uint32_t output_rate_hz,
+                                    complexf_t **out_samples,
+                                    size_t *out_count)
+{
+    const int radius = 12;
+    double cutoff = ratio < 1.0 ? ratio * 0.5 : 0.5;
+    complexf_t *work = NULL;
+    complexf_t *out = NULL;
+    size_t work_count;
+    size_t out_cap;
+    size_t out_n = 0;
+
+    if (in_count == 0 || ratio <= 0.0) {
+        return -1;
+    }
+
+    if (!live_resampler_state.valid ||
+        live_resampler_state.input_rate_hz != input_rate_hz ||
+        live_resampler_state.output_rate_hz != output_rate_hz ||
+        fabs(live_resampler_state.ratio - ratio) > 1e-12) {
+        memset(&live_resampler_state, 0, sizeof(live_resampler_state));
+        live_resampler_state.valid = 1;
+        live_resampler_state.input_rate_hz = input_rate_hz;
+        live_resampler_state.output_rate_hz = output_rate_hz;
+        live_resampler_state.ratio = ratio;
+        live_resampler_state.next_x = 0.0;
+        live_resampler_state.output_seq = 0u;
+        live_frontend_cursor.valid = 0;
+        live_soft_next_symbol_seq = 0u;
+    }
+
+    work_count = live_resampler_state.tail_count + in_count;
+    work = calloc(work_count, sizeof(*work));
+    if (work == NULL) {
+        fprintf(stderr, "failed to allocate live resample work buffer\n");
+        return -1;
+    }
+    if (live_resampler_state.tail_count > 0u) {
+        memcpy(work,
+               live_resampler_state.tail,
+               live_resampler_state.tail_count * sizeof(*work));
+    }
+    memcpy(&work[live_resampler_state.tail_count], in, in_count * sizeof(*work));
+
+    out_cap = (size_t)ceil(((double)in_count + 128.0) * ratio) + 128u;
+    if (out_cap == 0u) {
+        out_cap = 1u;
+    }
+    out = calloc(out_cap, sizeof(*out));
+    if (out == NULL) {
+        fprintf(stderr, "failed to allocate live resample buffer\n");
+        free(work);
+        return -1;
+    }
+
+    while (live_resampler_state.next_x + (double)radius < (double)in_count) {
+        double x = (double)live_resampler_state.tail_count + live_resampler_state.next_x;
+        int center = (int)floor(x);
+        double acc_re = 0.0;
+        double acc_im = 0.0;
+        double acc_w = 0.0;
+
+        if (out_n >= out_cap) {
+            size_t new_cap = out_cap * 2u;
+            complexf_t *new_out = realloc(out, new_cap * sizeof(*out));
+
+            if (new_out == NULL) {
+                fprintf(stderr, "failed to grow live resample buffer\n");
+                free(work);
+                free(out);
+                return -1;
+            }
+            out = new_out;
+            memset(&out[out_cap], 0, (new_cap - out_cap) * sizeof(*out));
+            out_cap = new_cap;
+        }
+
+        for (int k = center - radius; k <= center + radius; ++k) {
+            double d;
+            double wpos;
+            double window;
+            double h;
+
+            if (k < 0 || k >= (int)work_count) {
+                continue;
+            }
+
+            d = x - (double)k;
+            wpos = ((double)(k - (center - radius))) / (double)(radius * 2);
+            window = 0.5 - 0.5 * cos(2.0 * M_PI * wpos);
+            h = 2.0 * cutoff * sinc_norm(2.0 * cutoff * d) * window;
+
+            acc_re += (double)work[k].re * h;
+            acc_im += (double)work[k].im * h;
+            acc_w += h;
+        }
+
+        if (fabs(acc_w) > 1e-12) {
+            out[out_n].re = (float)(acc_re / acc_w);
+            out[out_n].im = (float)(acc_im / acc_w);
+        }
+        out_n++;
+        live_resampler_state.next_x += 1.0 / ratio;
+    }
+
+    live_resampler_state.next_x -= (double)in_count;
+    live_resampler_state.tail_count = in_count < (sizeof(live_resampler_state.tail) / sizeof(live_resampler_state.tail[0])) ?
+        in_count :
+        (sizeof(live_resampler_state.tail) / sizeof(live_resampler_state.tail[0]));
+    if (live_resampler_state.tail_count > 0u) {
+        memcpy(live_resampler_state.tail,
+               &in[in_count - live_resampler_state.tail_count],
+               live_resampler_state.tail_count * sizeof(live_resampler_state.tail[0]));
+    }
+
+    if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+        fprintf(stderr,
+                "[resample] live-state out_abs=%llu tail=%zu next_x=%.6f emitted=%zu\n",
+                (unsigned long long)live_resampler_state.output_seq,
+                live_resampler_state.tail_count,
+                live_resampler_state.next_x,
+                out_n);
+    }
+
+    free(work);
+    *out_samples = out;
+    *out_count = out_n;
+    live_resampled_chunk_start_abs = live_resampler_state.output_seq;
+    live_resampled_chunk_count = out_n;
+    live_resampler_state.output_seq += out_n;
+    return out_n > 0u ? 0 : -1;
+}
+
 static int resample_x4_sinc(const complexf_t *in,
                             size_t in_count,
                             complexf_t **out_samples,
@@ -337,6 +1455,85 @@ static int resample_x4_sinc(const complexf_t *in,
     }
 
     return resample_sinc_ratio(in, in_count, 4.0, out_samples, out_count);
+}
+
+static int live_ofdm_prepend_tail(const rbdvbt_config_t *cfg,
+                                  complexf_t **samples,
+                                  size_t *count,
+                                  uint32_t symbol_len)
+{
+    size_t keep;
+    size_t prefix;
+    complexf_t *merged = NULL;
+    const complexf_t *src;
+
+    live_ofdm_prefix_count = 0u;
+
+    if (!cfg->live_mode || symbol_len == 0u || *samples == NULL || *count == 0u) {
+        return 0;
+    }
+
+    keep = (size_t)symbol_len * 2u;
+    if (!live_ofdm_buffer_state.valid ||
+        live_ofdm_buffer_state.sample_rate_hz != cfg->sample_rate_hz ||
+        live_ofdm_buffer_state.symbol_len != symbol_len) {
+        live_ofdm_buffer_state.valid = 1;
+        live_ofdm_buffer_state.sample_rate_hz = cfg->sample_rate_hz;
+        live_ofdm_buffer_state.symbol_len = symbol_len;
+        live_ofdm_buffer_state.tail_count = 0u;
+    }
+
+    if (live_ofdm_buffer_state.tail_cap < keep) {
+        complexf_t *new_tail = realloc(live_ofdm_buffer_state.tail, keep * sizeof(*new_tail));
+
+        if (new_tail == NULL) {
+            fprintf(stderr, "failed to allocate live OFDM ring tail\n");
+            return -1;
+        }
+        live_ofdm_buffer_state.tail = new_tail;
+        live_ofdm_buffer_state.tail_cap = keep;
+        if (live_ofdm_buffer_state.tail_count > keep) {
+            live_ofdm_buffer_state.tail_count = keep;
+        }
+    }
+
+    prefix = live_ofdm_buffer_state.tail_count;
+    if (prefix > 0u) {
+        merged = calloc(prefix + *count, sizeof(*merged));
+        if (merged == NULL) {
+            fprintf(stderr, "failed to allocate live OFDM ring buffer\n");
+            return -1;
+        }
+        memcpy(merged, live_ofdm_buffer_state.tail, prefix * sizeof(*merged));
+        memcpy(&merged[prefix], *samples, *count * sizeof(*merged));
+        free(*samples);
+        *samples = merged;
+        *count += prefix;
+        live_ofdm_prefix_count = prefix;
+        if (live_resampled_chunk_start_abs >= (uint64_t)prefix) {
+            live_resampled_chunk_start_abs -= (uint64_t)prefix;
+        } else {
+            live_resampled_chunk_start_abs = 0u;
+        }
+        live_resampled_chunk_count += prefix;
+    }
+
+    src = *samples;
+    live_ofdm_buffer_state.tail_count = *count < keep ? *count : keep;
+    if (live_ofdm_buffer_state.tail_count > 0u) {
+        memcpy(live_ofdm_buffer_state.tail,
+               &src[*count - live_ofdm_buffer_state.tail_count],
+               live_ofdm_buffer_state.tail_count * sizeof(*src));
+    }
+
+    if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+        fprintf(stderr,
+                "[ofdm-live] prefix=%zu tail=%zu symbol_len=%u\n",
+                live_ofdm_prefix_count,
+                live_ofdm_buffer_state.tail_count,
+                symbol_len);
+    }
+    return 0;
 }
 
 static double cp_score_at(const complexf_t *samples,
@@ -380,6 +1577,56 @@ static double cp_score_at(const complexf_t *samples,
     return sqrt((double)c_abs2(corr)) / sqrt(p0 * p1);
 }
 
+static double grdvbt_ml_metric_at(const complexf_t *samples,
+                                  size_t count,
+                                  uint32_t fft_size,
+                                  uint32_t gi_len,
+                                  uint32_t symbol_len,
+                                  uint32_t offset,
+                                  uint32_t max_symbols,
+                                  double rho,
+                                  double *out_score,
+                                  complexf_t *out_corr)
+{
+    complexf_t corr = {0.0f, 0.0f};
+    double phi = 0.0;
+    double p0 = 0.0;
+    double p1 = 0.0;
+    uint32_t symbols = 0;
+    uint32_t s;
+
+    for (s = 0; s < max_symbols; ++s) {
+        size_t base = (size_t)offset + (size_t)s * symbol_len;
+        uint32_t k;
+
+        if (base + fft_size + gi_len >= count) {
+            break;
+        }
+
+        for (k = 0; k < gi_len; ++k) {
+            complexf_t a = samples[base + k];
+            complexf_t b = samples[base + fft_size + k];
+            double a2 = c_abs2(a);
+            double b2 = c_abs2(b);
+
+            corr = c_add(corr, c_mul(a, c_conj(b)));
+            p0 += a2;
+            p1 += b2;
+            phi += a2 + b2;
+        }
+        symbols++;
+    }
+
+    *out_corr = corr;
+    if (symbols == 0 || p0 <= 0.0 || p1 <= 0.0) {
+        *out_score = 0.0;
+        return -INFINITY;
+    }
+
+    *out_score = sqrt((double)c_abs2(corr)) / sqrt(p0 * p1);
+    return sqrt((double)c_abs2(corr)) - (rho * 0.5 * phi);
+}
+
 static uint32_t find_symbol_start(const complexf_t *samples,
                                   size_t count,
                                   uint32_t fft_size,
@@ -405,6 +1652,118 @@ static uint32_t find_symbol_start(const complexf_t *samples,
                                    max_symbols,
                                    &corr);
         if (score > best_score) {
+            best_score = score;
+            best_offset = offset;
+            best_corr = corr;
+        }
+    }
+
+    *out_score = best_score;
+    *out_corr = best_corr;
+    return best_offset;
+}
+
+static uint32_t find_symbol_start_grdvbt_ml(const complexf_t *samples,
+                                            size_t count,
+                                            uint32_t fft_size,
+                                            uint32_t gi_len,
+                                            uint32_t symbol_len,
+                                            uint32_t max_symbols,
+                                            double *out_score,
+                                            complexf_t *out_corr)
+{
+    uint32_t best_offset = 0;
+    double best_metric = -INFINITY;
+    double best_score = 0.0;
+    complexf_t best_corr = {0.0f, 0.0f};
+    uint32_t offset;
+
+    for (offset = 0; offset < symbol_len; ++offset) {
+        double score = 0.0;
+        complexf_t corr = {0.0f, 0.0f};
+        double metric = grdvbt_ml_metric_at(samples,
+                                            count,
+                                            fft_size,
+                                            gi_len,
+                                            symbol_len,
+                                            offset,
+                                            max_symbols,
+                                            GRDVBT_ML_SYNC_RHO,
+                                            &score,
+                                            &corr);
+
+        if (metric > best_metric) {
+            best_metric = metric;
+            best_score = score;
+            best_offset = offset;
+            best_corr = corr;
+        }
+    }
+
+    *out_score = best_score;
+    *out_corr = best_corr;
+    return best_offset;
+}
+
+static uint64_t symbol_phase_delta(uint64_t a, uint64_t b, uint32_t symbol_len)
+{
+    uint64_t raw_delta;
+    uint64_t rem;
+
+    if (symbol_len == 0u) {
+        return a > b ? a - b : b - a;
+    }
+    raw_delta = a > b ? a - b : b - a;
+    rem = raw_delta % (uint64_t)symbol_len;
+    if (rem > (uint64_t)symbol_len - rem) {
+        rem = (uint64_t)symbol_len - rem;
+    }
+    return rem;
+}
+
+static uint32_t find_symbol_start_near_local_grdvbt_ml(const complexf_t *samples,
+                                                       size_t count,
+                                                       uint32_t fft_size,
+                                                       uint32_t gi_len,
+                                                       uint32_t symbol_len,
+                                                       uint32_t max_symbols,
+                                                       uint32_t predicted,
+                                                       uint32_t radius,
+                                                       double *out_score,
+                                                       complexf_t *out_corr)
+{
+    uint32_t best_offset = predicted;
+    double best_metric = -INFINITY;
+    double best_score = 0.0;
+    complexf_t best_corr = {0.0f, 0.0f};
+    int32_t first = predicted > radius ? (int32_t)(predicted - radius) : 0;
+    int32_t last = predicted + radius;
+
+    if ((uint64_t)last + (uint64_t)fft_size + (uint64_t)gi_len >= (uint64_t)count) {
+        if (count > (size_t)(fft_size + gi_len)) {
+            last = (int32_t)(count - (size_t)fft_size - (size_t)gi_len - 1u);
+        } else {
+            last = first;
+        }
+    }
+
+    for (int32_t offset_i = first; offset_i <= last; ++offset_i) {
+        uint32_t offset = (uint32_t)offset_i;
+        double score = 0.0;
+        complexf_t corr = {0.0f, 0.0f};
+        double metric = grdvbt_ml_metric_at(samples,
+                                            count,
+                                            fft_size,
+                                            gi_len,
+                                            symbol_len,
+                                            offset,
+                                            max_symbols,
+                                            GRDVBT_ML_SYNC_RHO,
+                                            &score,
+                                            &corr);
+
+        if (metric > best_metric) {
+            best_metric = metric;
             best_score = score;
             best_offset = offset;
             best_corr = corr;
@@ -536,16 +1895,18 @@ static int write_cp_timing(const rbdvbt_config_t *cfg,
     *out_safe_score = scores[safe];
     *out_safe_corr = corrs[safe];
 
-    fprintf(stderr,
-            "[cptiming] peak=%u peak_score=%.5f plateau=%u..%u safe=%u safe_score=%.5f csv=%s svg=%s\n",
-            best,
-            best_score,
-            plateau_first,
-            plateau_last,
-            safe,
-            scores[safe],
-            cfg->cp_timing_out != NULL ? cfg->cp_timing_out : "-",
-            cfg->cp_timing_svg != NULL ? cfg->cp_timing_svg : "-");
+    if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+        fprintf(stderr,
+                "[cptiming] peak=%u peak_score=%.5f plateau=%u..%u safe=%u safe_score=%.5f csv=%s svg=%s\n",
+                best,
+                best_score,
+                plateau_first,
+                plateau_last,
+                safe,
+                scores[safe],
+                cfg->cp_timing_out != NULL ? cfg->cp_timing_out : "-",
+                cfg->cp_timing_svg != NULL ? cfg->cp_timing_svg : "-");
+    }
 
     rc = 0;
 
@@ -2574,6 +3935,393 @@ typedef struct {
     float y_cost[2];
 } viterbi_pair_t;
 
+typedef struct {
+    int valid;
+    rbdvbt_fec_t fec;
+    double metrics[128];
+} live_viterbi_state_t;
+
+static live_viterbi_state_t live_viterbi_state;
+
+typedef struct {
+    int valid;
+    rbdvbt_fec_t fec;
+    double metrics[128];
+    uint8_t *history;
+    size_t history_len;
+    uint64_t steps;
+    uint8_t out_byte;
+    uint32_t out_bits;
+} live_viterbi_stream_state_t;
+
+static live_viterbi_stream_state_t live_viterbi_stream;
+
+typedef struct {
+    complexf_t *items;
+    uint32_t *model_symbols;
+    size_t count;
+    size_t cap;
+    size_t symbol_cap;
+    uint64_t seq_start;
+    uint32_t model_symbol_start;
+    uint32_t symbol_count;
+    int continuous;
+} live_soft_dibit_fifo_t;
+
+static live_soft_dibit_fifo_t live_soft_dibit_fifo;
+#define LIVE_SOFT_FRAME_SYMBOLS 512u
+#define LIVE_DECODE_WINDOW_SYMBOLS 256u
+#define LIVE_VITERBI_CONSUME_SYMBOLS 64u
+#define VITERBI_STATE_COUNT 64u
+
+typedef struct live_decode_job {
+    rbdvbt_fec_t fec;
+    complexf_t *symbols;
+    uint32_t *model_symbols;
+    size_t symbol_cell_count;
+    uint64_t seq_start;
+    uint32_t model_symbol_start;
+    uint32_t symbol_count;
+    int continuous;
+    const char *path;
+    const char *ts_path;
+    rbdvbt_status_context_t status;
+    char symbol_rate[16];
+    uint64_t epoch;
+    struct live_decode_job *next;
+} live_decode_job_t;
+
+static pthread_mutex_t live_decode_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t live_decode_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t live_decode_space_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t live_decode_thread;
+static int live_decode_thread_started;
+static int live_decode_stop;
+static live_decode_job_t *live_decode_head;
+static live_decode_job_t *live_decode_tail;
+static size_t live_decode_jobs;
+static uint32_t live_decode_queued_symbols;
+static uint32_t live_decode_processing_symbols;
+static uint64_t live_decode_epoch;
+static int live_decode_gap_pending;
+
+#define LIVE_DECODE_MAX_QUEUED_SYMBOLS 1024u
+
+typedef struct {
+    int active;
+    double t0;
+    uint32_t chunks;
+    double lock_sum;
+    double lock_min;
+    double snr_sum;
+    double snr_min;
+    uint32_t cont_bad;
+    uint64_t max_delta_samples;
+    uint64_t max_phase_delta_samples;
+    uint32_t fifo_max_symbols;
+    uint32_t fifo_drops;
+    uint32_t fifo_drop_symbols;
+    uint32_t low_pilot_drops;
+    uint32_t packets;
+    uint32_t sync_bad;
+    uint32_t transport_errors;
+    uint32_t cc_errors;
+    uint32_t rs_uncorrectable;
+} live_health_t;
+
+static pthread_mutex_t live_health_mutex = PTHREAD_MUTEX_INITIALIZER;
+static live_health_t live_health;
+
+#define LIVE_HEALTH_PERIOD_SECONDS 5.0
+
+static void live_health_reset_locked(double now)
+{
+    memset(&live_health, 0, sizeof(live_health));
+    live_health.active = 1;
+    live_health.t0 = now;
+    live_health.lock_min = 1.0e9;
+    live_health.snr_min = 1.0e9;
+}
+
+static void live_health_maybe_emit_locked(double now)
+{
+    double elapsed;
+
+    if (!live_health.active) {
+        live_health_reset_locked(now);
+        return;
+    }
+    elapsed = now - live_health.t0;
+    if (elapsed < LIVE_HEALTH_PERIOD_SECONDS) {
+        return;
+    }
+
+    if (live_health.chunks > 0u || live_health.packets > 0u ||
+        live_health.fifo_drops > 0u || live_health.cont_bad > 0u) {
+        double lock_avg = live_health.chunks > 0u ?
+            live_health.lock_sum / (double)live_health.chunks : 0.0;
+        double snr_avg = live_health.chunks > 0u ?
+            live_health.snr_sum / (double)live_health.chunks : 0.0;
+        double lock_min = live_health.lock_min < 1.0e8 ? live_health.lock_min : 0.0;
+        double snr_min = live_health.snr_min < 1.0e8 ? live_health.snr_min : 0.0;
+
+        fprintf(stderr,
+                "[health] %.1fs chunks=%u lock_min=%.5f lock_avg=%.5f snr_min=%.2fdB snr_avg=%.2fdB cont_bad=%u max_delta=%llu max_phase_delta=%llu fifo_max=%u fifo_drops=%u fifo_drop_symbols=%u low_pilot=%u packets=%u rs_uncorr=%u cc=%u tei=%u sync_bad=%u\n",
+                elapsed,
+                live_health.chunks,
+                lock_min,
+                lock_avg,
+                snr_min,
+                snr_avg,
+                live_health.cont_bad,
+                (unsigned long long)live_health.max_delta_samples,
+                (unsigned long long)live_health.max_phase_delta_samples,
+                live_health.fifo_max_symbols,
+                live_health.fifo_drops,
+                live_health.fifo_drop_symbols,
+                live_health.low_pilot_drops,
+                live_health.packets,
+                live_health.rs_uncorrectable,
+                live_health.cc_errors,
+                live_health.transport_errors,
+                live_health.sync_bad);
+    }
+    live_health_reset_locked(now);
+}
+
+static void live_health_note_frontend(double lock,
+                                      double snr_db,
+                                      int have_continuity_measurement,
+                                      int frontend_continuous,
+                                      uint64_t delta_samples,
+                                      uint64_t phase_delta_samples)
+{
+    double now = monotonic_seconds();
+
+    pthread_mutex_lock(&live_health_mutex);
+    if (!live_health.active) {
+        live_health_reset_locked(now);
+    }
+    live_health.chunks++;
+    live_health.lock_sum += lock;
+    live_health.snr_sum += snr_db;
+    if (lock < live_health.lock_min) {
+        live_health.lock_min = lock;
+    }
+    if (snr_db < live_health.snr_min) {
+        live_health.snr_min = snr_db;
+    }
+    if (have_continuity_measurement && !frontend_continuous) {
+        live_health.cont_bad++;
+    }
+    if (delta_samples > live_health.max_delta_samples) {
+        live_health.max_delta_samples = delta_samples;
+    }
+    if (phase_delta_samples > live_health.max_phase_delta_samples) {
+        live_health.max_phase_delta_samples = phase_delta_samples;
+    }
+    live_health_maybe_emit_locked(now);
+    pthread_mutex_unlock(&live_health_mutex);
+}
+
+static void live_health_note_fifo(uint32_t queued_symbols,
+                                  uint32_t processing_symbols,
+                                  uint32_t dropped_symbols)
+{
+    double now = monotonic_seconds();
+    uint32_t total_symbols = queued_symbols + processing_symbols;
+
+    pthread_mutex_lock(&live_health_mutex);
+    if (!live_health.active) {
+        live_health_reset_locked(now);
+    }
+    if (total_symbols > live_health.fifo_max_symbols) {
+        live_health.fifo_max_symbols = total_symbols;
+    }
+    if (dropped_symbols > 0u) {
+        live_health.fifo_drops++;
+        live_health.fifo_drop_symbols += dropped_symbols;
+    }
+    live_health_maybe_emit_locked(now);
+    pthread_mutex_unlock(&live_health_mutex);
+}
+
+static void live_health_note_low_pilot(void)
+{
+    double now = monotonic_seconds();
+
+    pthread_mutex_lock(&live_health_mutex);
+    if (!live_health.active) {
+        live_health_reset_locked(now);
+    }
+    live_health.low_pilot_drops++;
+    live_health_maybe_emit_locked(now);
+    pthread_mutex_unlock(&live_health_mutex);
+}
+
+void rbdvbt_live_health_note_outer(uint32_t packets,
+                                   uint32_t sync_bad,
+                                   uint32_t transport_errors,
+                                   uint32_t cc_errors,
+                                   uint32_t rs_uncorrectable)
+{
+    double now = monotonic_seconds();
+
+    pthread_mutex_lock(&live_health_mutex);
+    if (!live_health.active) {
+        live_health_reset_locked(now);
+    }
+    live_health.packets += packets;
+    live_health.sync_bad += sync_bad;
+    live_health.transport_errors += transport_errors;
+    live_health.cc_errors += cc_errors;
+    live_health.rs_uncorrectable += rs_uncorrectable;
+    live_health_maybe_emit_locked(now);
+    pthread_mutex_unlock(&live_health_mutex);
+}
+
+static void live_decode_free_job(live_decode_job_t *job)
+{
+    if (job == NULL) {
+        return;
+    }
+    free(job->symbols);
+    free(job->model_symbols);
+    free(job);
+}
+
+static size_t live_decode_drop_symbol_locked(void)
+{
+    live_decode_job_t *job = live_decode_head;
+    size_t cells = RBDVBT_DVBT_2K_DATA_CELLS;
+
+    if (job == NULL || job->symbol_count == 0u || job->symbol_cell_count < cells) {
+        return 0u;
+    }
+
+    if (job->symbol_count == 1u) {
+        live_decode_head = job->next;
+        if (live_decode_head == NULL) {
+            live_decode_tail = NULL;
+        }
+        live_decode_jobs--;
+        if (live_decode_queued_symbols > 0u) {
+            live_decode_queued_symbols--;
+        }
+        live_decode_free_job(job);
+        return 1u;
+    }
+
+    memmove(job->symbols,
+            &job->symbols[cells],
+            (job->symbol_cell_count - cells) * sizeof(*job->symbols));
+    if (job->model_symbols != NULL) {
+        memmove(job->model_symbols,
+                &job->model_symbols[1],
+                ((size_t)job->symbol_count - 1u) * sizeof(*job->model_symbols));
+    }
+    job->symbol_cell_count -= cells;
+    job->symbol_count--;
+    job->seq_start++;
+    job->model_symbol_start = job->model_symbols != NULL ?
+        job->model_symbols[0] :
+        job->model_symbol_start + 1u;
+    job->continuous = 0;
+    if (live_decode_queued_symbols > 0u) {
+        live_decode_queued_symbols--;
+    }
+    return 1u;
+}
+
+static size_t live_decode_drop_symbols_locked(uint32_t symbols)
+{
+    size_t dropped = 0u;
+
+    while (symbols > 0u && live_decode_head != NULL) {
+        size_t n = live_decode_drop_symbol_locked();
+
+        if (n == 0u) {
+            break;
+        }
+        dropped += n;
+        symbols--;
+    }
+    return dropped;
+}
+
+static uint32_t live_decode_invalidate_queued_locked(const char *reason)
+{
+    uint32_t dropped_symbols = live_decode_queued_symbols;
+    uint32_t processing_symbols = live_decode_processing_symbols;
+    size_t dropped_jobs = live_decode_jobs;
+
+    while (live_decode_head != NULL) {
+        live_decode_job_t *job = live_decode_head;
+        live_decode_head = job->next;
+        live_decode_free_job(job);
+    }
+    live_decode_tail = NULL;
+    live_decode_jobs = 0u;
+    live_decode_queued_symbols = 0u;
+    live_decode_gap_pending = 0;
+    live_decode_epoch++;
+    gui_fifo_submit(live_decode_queued_symbols,
+                    live_decode_processing_symbols,
+                    LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+    pthread_cond_broadcast(&live_decode_space_cond);
+
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        fprintf(stderr,
+                "[fifo1] reset epoch=%llu reason=%s dropped_jobs=%zu dropped_symbols=%u processing_symbols=%u\n",
+                (unsigned long long)live_decode_epoch,
+                reason != NULL ? reason : "-",
+                dropped_jobs,
+                dropped_symbols,
+                live_decode_processing_symbols);
+    }
+    return processing_symbols;
+}
+
+static uint32_t live_decode_invalidate_queued(const char *reason)
+{
+    uint32_t processing_symbols;
+
+    pthread_mutex_lock(&live_decode_mutex);
+    processing_symbols = live_decode_invalidate_queued_locked(reason);
+    pthread_mutex_unlock(&live_decode_mutex);
+    return processing_symbols;
+}
+
+static void live_decode_wait_idle(const char *reason)
+{
+    double t0 = monotonic_seconds();
+    uint32_t processing_symbols;
+
+    pthread_mutex_lock(&live_decode_mutex);
+    while (live_decode_processing_symbols > 0u) {
+        pthread_cond_wait(&live_decode_space_cond, &live_decode_mutex);
+    }
+    processing_symbols = live_decode_processing_symbols;
+    pthread_mutex_unlock(&live_decode_mutex);
+
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        double t1 = monotonic_seconds();
+        fprintf(stderr,
+                "[fifo1] idle epoch=%llu reason=%s processing_symbols=%u wait=%.3fs\n",
+                (unsigned long long)live_decode_epoch,
+                reason != NULL ? reason : "-",
+                processing_symbols,
+                t1 - t0);
+    }
+}
+#define LIVE_METADATA_PILOT_LOCK_MIN 0.45
+#define LIVE_METADATA_PILOT_LOCK_STRONG 0.55
+#define LIVE_METADATA_SEARCH_RADIUS 96u
+#define LIVE_METADATA_REFINE_SYMBOLS 4u
+#define LIVE_METADATA_VERIFY_SYMBOLS 8u
+#define LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR 16u
+#define LIVE_GRDVBT_TRACK_RADIUS 8u
+
 static void qpsk_axis_bit_costs(float value, float costs[2])
 {
     const float target = 0.70710678f;
@@ -2632,6 +4380,67 @@ static void dvbt_qpsk_soft_bit_deinterleave_block(const complexf_t *symbols,
         soft_dibits[w].y_cost[0] = y_costs[w][0];
         soft_dibits[w].y_cost[1] = y_costs[w][1];
     }
+}
+
+static int dvbt_qpsk_inner_deinterleave_symbols(const complexf_t *raw_symbols,
+                                                size_t symbol_cell_count,
+                                                uint32_t model_symbol_start,
+                                                qpsk_dibit_t **out_dibits,
+                                                size_t *out_dibit_count)
+{
+    qpsk_dibit_t *dibits;
+    size_t full_symbols = symbol_cell_count / RBDVBT_DVBT_2K_DATA_CELLS;
+    size_t out_count = full_symbols * RBDVBT_DVBT_2K_DATA_CELLS;
+
+    if (out_dibits == NULL || out_dibit_count == NULL) {
+        return -1;
+    }
+    *out_dibits = NULL;
+    *out_dibit_count = 0u;
+    if (out_count == 0u) {
+        return 0;
+    }
+
+    dibits = malloc(out_count * sizeof(*dibits));
+    if (dibits == NULL) {
+        fprintf(stderr, "failed to allocate inner deinterleave dibits\n");
+        return -1;
+    }
+
+    for (size_t sym = 0; sym < full_symbols; ++sym) {
+        const complexf_t *raw = &raw_symbols[sym * RBDVBT_DVBT_2K_DATA_CELLS];
+        complexf_t rx_sii_soft[RBDVBT_DVBT_2K_DATA_CELLS];
+        uint8_t rx_sii[RBDVBT_DVBT_2K_DATA_CELLS];
+
+        memset(rx_sii_soft, 0, sizeof(rx_sii_soft));
+        memset(rx_sii, 0, sizeof(rx_sii));
+
+        dvbt2k_symbol_deinterleave_complex(model_symbol_start + (uint32_t)sym,
+                                           raw,
+                                           rx_sii_soft);
+
+        for (uint32_t i = 0; i < RBDVBT_DVBT_2K_DATA_CELLS; ++i) {
+            rx_sii[i] = qpsk_hard_decision(rx_sii_soft[i]);
+        }
+
+        for (uint32_t block = 0; block < RBDVBT_DVBT_2K_DATA_CELLS / 126u; ++block) {
+            uint8_t hard_dibits[126];
+            qpsk_dibit_t soft_dibits[126];
+            uint32_t base_index = block * 126u;
+
+            dvbt_qpsk_bit_deinterleave_block(&rx_sii[base_index], hard_dibits);
+            dvbt_qpsk_soft_bit_deinterleave_block(&rx_sii_soft[base_index],
+                                                  hard_dibits,
+                                                  soft_dibits);
+            memcpy(&dibits[sym * RBDVBT_DVBT_2K_DATA_CELLS + base_index],
+                   soft_dibits,
+                   sizeof(soft_dibits));
+        }
+    }
+
+    *out_dibits = dibits;
+    *out_dibit_count = out_count;
+    return 0;
 }
 
 static uint8_t dvbt_conv_parity_for_state(uint8_t state)
@@ -2693,6 +4502,223 @@ static void depuncture_pair_set(viterbi_pair_t *pair,
     pair->x_cost[1] = has_x && x_cost != NULL ? x_cost[1] : 0.0f;
     pair->y_cost[0] = has_y && y_cost != NULL ? y_cost[0] : 0.0f;
     pair->y_cost[1] = has_y && y_cost != NULL ? y_cost[1] : 0.0f;
+}
+
+static uint32_t viterbi_traceback_bytes(rbdvbt_fec_t fec)
+{
+    switch (fec) {
+    case RBDVBT_FEC_1_2:
+        return 5u;
+    case RBDVBT_FEC_2_3:
+        return 9u;
+    case RBDVBT_FEC_3_4:
+        return 10u;
+    case RBDVBT_FEC_5_6:
+        return 15u;
+    case RBDVBT_FEC_7_8:
+        return 24u;
+    case RBDVBT_FEC_AUTO:
+        return 9u;
+    }
+    return 9u;
+}
+
+static void live_viterbi_stream_reset(void)
+{
+    live_viterbi_stream.valid = 0;
+    live_viterbi_stream.fec = RBDVBT_FEC_AUTO;
+    live_viterbi_stream.steps = 0u;
+    live_viterbi_stream.out_byte = 0u;
+    live_viterbi_stream.out_bits = 0u;
+}
+
+static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
+                                     const qpsk_dibit_t *dibits,
+                                     size_t dibit_count,
+                                     viterbi_pair_t **out_pairs);
+
+static int live_viterbi_stream_prepare(rbdvbt_fec_t fec)
+{
+    size_t traceback_bits = (size_t)viterbi_traceback_bytes(fec) * 8u;
+
+    if (traceback_bits == 0u) {
+        return -1;
+    }
+    if (live_viterbi_stream.history_len != traceback_bits) {
+        uint8_t *history = realloc(live_viterbi_stream.history, traceback_bits * VITERBI_STATE_COUNT);
+
+        if (history == NULL) {
+            return -1;
+        }
+        live_viterbi_stream.history = history;
+        live_viterbi_stream.history_len = traceback_bits;
+    }
+
+    for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
+        live_viterbi_stream.metrics[s] = 0.0;
+    }
+    live_viterbi_stream.fec = fec;
+    live_viterbi_stream.steps = 0u;
+    live_viterbi_stream.out_byte = 0u;
+    live_viterbi_stream.out_bits = 0u;
+    live_viterbi_stream.valid = 1;
+    return 0;
+}
+
+static int live_viterbi_stream_emit_bit(uint8_t bit,
+                                        uint8_t **out,
+                                        size_t *out_count,
+                                        size_t *out_cap)
+{
+    live_viterbi_stream.out_byte = (uint8_t)((live_viterbi_stream.out_byte << 1) | (bit & 1u));
+    live_viterbi_stream.out_bits++;
+    if (live_viterbi_stream.out_bits < 8u) {
+        return 0;
+    }
+
+    if (*out_count >= *out_cap) {
+        size_t new_cap = *out_cap != 0u ? *out_cap * 2u : 4096u;
+        uint8_t *new_out = realloc(*out, new_cap);
+
+        if (new_out == NULL) {
+            return -1;
+        }
+        *out = new_out;
+        *out_cap = new_cap;
+    }
+    (*out)[(*out_count)++] = live_viterbi_stream.out_byte;
+    live_viterbi_stream.out_byte = 0u;
+    live_viterbi_stream.out_bits = 0u;
+    return 0;
+}
+
+static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
+                                            const qpsk_dibit_t *dibits,
+                                            size_t dibit_count,
+                                            int continuous,
+                                            uint8_t **out_bytes,
+                                            size_t *out_byte_count,
+                                            size_t *out_pair_count,
+                                            double *out_best_metric)
+{
+    const double inf = 1.0e100;
+    viterbi_pair_t *pairs = NULL;
+    uint8_t *out = NULL;
+    size_t out_count = 0u;
+    size_t out_cap = 0u;
+    size_t pair_count;
+    size_t traceback_bits = (size_t)viterbi_traceback_bytes(fec) * 8u;
+    double best_metric = 0.0;
+    int rc = -1;
+
+    *out_bytes = NULL;
+    *out_byte_count = 0u;
+    if (out_pair_count != NULL) {
+        *out_pair_count = 0u;
+    }
+    if (out_best_metric != NULL) {
+        *out_best_metric = 0.0;
+    }
+
+    if (!continuous || !live_viterbi_stream.valid || live_viterbi_stream.fec != fec) {
+        if (live_viterbi_stream_prepare(fec) != 0) {
+            fprintf(stderr, "failed to initialize live Viterbi stream\n");
+            goto done;
+        }
+    }
+
+    pair_count = dvbt_depuncture_dibits(fec, dibits, dibit_count, &pairs);
+    if (pair_count == 0u || pairs == NULL) {
+        fprintf(stderr, "failed to depuncture live Viterbi input\n");
+        goto done;
+    }
+    if (out_pair_count != NULL) {
+        *out_pair_count = pair_count;
+    }
+
+    for (size_t t = 0; t < pair_count; ++t) {
+        double next_metrics[VITERBI_STATE_COUNT];
+        double step_best = inf;
+        int best_state = 0;
+        uint8_t *history_row = &live_viterbi_stream.history[(live_viterbi_stream.steps % traceback_bits) * VITERBI_STATE_COUNT];
+
+        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
+            next_metrics[s] = inf;
+            history_row[s] = 0u;
+        }
+
+        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
+            if (live_viterbi_stream.metrics[s] >= inf) {
+                continue;
+            }
+            for (int bit = 0; bit <= 1; ++bit) {
+                uint8_t reg = (uint8_t)(((uint8_t)bit << 6) | (uint8_t)s);
+                uint8_t next_state = (uint8_t)(reg >> 1);
+                uint8_t expected = dvbt_conv_parity_for_state(reg);
+                double branch = 0.0;
+                double metric;
+
+                if (pairs[t].has_x) {
+                    branch += pairs[t].x_cost[expected & 1u];
+                }
+                if (pairs[t].has_y) {
+                    branch += pairs[t].y_cost[(expected >> 1) & 1u];
+                }
+
+                metric = live_viterbi_stream.metrics[s] + branch;
+                if (metric < next_metrics[next_state]) {
+                    next_metrics[next_state] = metric;
+                    history_row[next_state] = (uint8_t)s;
+                }
+            }
+        }
+
+        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
+            if (next_metrics[s] < step_best) {
+                step_best = next_metrics[s];
+                best_state = (int)s;
+            }
+        }
+        if (step_best >= inf) {
+            live_viterbi_stream_reset();
+            goto done;
+        }
+        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
+            live_viterbi_stream.metrics[s] = next_metrics[s] - step_best;
+        }
+        best_metric += step_best;
+        live_viterbi_stream.steps++;
+
+        if (live_viterbi_stream.steps > traceback_bits) {
+            uint8_t state = (uint8_t)best_state;
+
+            for (size_t k = 0; k < traceback_bits; ++k) {
+                uint64_t step = live_viterbi_stream.steps - 1u - k;
+                const uint8_t *row = &live_viterbi_stream.history[(step % traceback_bits) * VITERBI_STATE_COUNT];
+
+                state = row[state];
+            }
+            if (live_viterbi_stream_emit_bit((uint8_t)((state >> 5) & 1u),
+                                             &out,
+                                             &out_count,
+                                             &out_cap) != 0) {
+                goto done;
+            }
+        }
+    }
+
+    *out_bytes = out;
+    *out_byte_count = out_count;
+    if (out_best_metric != NULL) {
+        *out_best_metric = best_metric;
+    }
+    out = NULL;
+    rc = 0;
+
+done:
+    free(pairs);
+    free(out);
+    return rc;
 }
 
 static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
@@ -2787,20 +4813,22 @@ static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
 
 static int dvbt_viterbi_decode_pairs(const viterbi_pair_t *pairs,
                                      size_t pair_count,
+                                     const double *initial_metrics,
+                                     double *final_metrics,
                                      uint8_t **out_bits,
                                      size_t *out_bit_count,
                                      double *out_best_metric)
 {
     const double inf = 1.0e100;
-    double metrics[128];
-    double next_metrics[128];
+    double metrics[VITERBI_STATE_COUNT];
+    double next_metrics[VITERBI_STATE_COUNT];
     uint8_t *prev_states = NULL;
     uint8_t *bits = NULL;
     int best_state = 0;
     double best_metric = inf;
     size_t t;
 
-    prev_states = malloc(pair_count * 128u);
+    prev_states = malloc(pair_count * VITERBI_STATE_COUNT);
     bits = malloc(pair_count);
     if (prev_states == NULL || bits == NULL) {
         free(prev_states);
@@ -2808,24 +4836,25 @@ static int dvbt_viterbi_decode_pairs(const viterbi_pair_t *pairs,
         return -1;
     }
 
-    for (int s = 0; s < 128; ++s) {
-        metrics[s] = 0;
+    for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
+        metrics[s] = initial_metrics != NULL ? initial_metrics[s] : 0.0;
     }
 
     for (t = 0; t < pair_count; ++t) {
-        for (int s = 0; s < 128; ++s) {
+        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
             next_metrics[s] = inf;
-            prev_states[t * 128u + (size_t)s] = 0;
+            prev_states[t * VITERBI_STATE_COUNT + (size_t)s] = 0;
         }
 
-        for (int s = 0; s < 128; ++s) {
+        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
             if (metrics[s] >= inf) {
                 continue;
             }
 
             for (int bit = 0; bit <= 1; ++bit) {
-                uint8_t next_state = (uint8_t)(((uint8_t)s >> 1) | (bit ? 0x40u : 0u));
-                uint8_t expected = dvbt_conv_parity_for_state(next_state);
+                uint8_t reg = (uint8_t)(((uint8_t)bit << 6) | (uint8_t)s);
+                uint8_t next_state = (uint8_t)(reg >> 1);
+                uint8_t expected = dvbt_conv_parity_for_state(reg);
                 double branch = 0.0;
                 double metric;
 
@@ -2839,7 +4868,7 @@ static int dvbt_viterbi_decode_pairs(const viterbi_pair_t *pairs,
                 metric = metrics[s] + branch;
                 if (metric < next_metrics[next_state]) {
                     next_metrics[next_state] = metric;
-                    prev_states[t * 128u + (size_t)next_state] = (uint8_t)s;
+                    prev_states[t * VITERBI_STATE_COUNT + (size_t)next_state] = (uint8_t)s;
                 }
             }
         }
@@ -2847,16 +4876,25 @@ static int dvbt_viterbi_decode_pairs(const viterbi_pair_t *pairs,
         memcpy(metrics, next_metrics, sizeof(metrics));
     }
 
-    for (int s = 0; s < 128; ++s) {
+    for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
         if (metrics[s] < best_metric) {
             best_metric = metrics[s];
-            best_state = s;
+            best_state = (int)s;
+        }
+    }
+
+    if (final_metrics != NULL) {
+        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
+            final_metrics[s] = metrics[s] - best_metric;
+        }
+        for (uint32_t s = VITERBI_STATE_COUNT; s < 128u; ++s) {
+            final_metrics[s] = inf;
         }
     }
 
     for (t = pair_count; t > 0; --t) {
-        bits[t - 1u] = (uint8_t)((best_state >> 6) & 1u);
-        best_state = prev_states[(t - 1u) * 128u + (size_t)best_state];
+        bits[t - 1u] = (uint8_t)((best_state >> 5) & 1u);
+        best_state = prev_states[(t - 1u) * VITERBI_STATE_COUNT + (size_t)best_state];
     }
 
     free(prev_states);
@@ -2871,6 +4909,8 @@ static int dvbt_viterbi_decode_pairs(const viterbi_pair_t *pairs,
 static int decode_viterbi_bytes(rbdvbt_fec_t fec,
                                 const qpsk_dibit_t *dibits,
                                 size_t dibit_count,
+                                const double *initial_metrics,
+                                double *final_metrics,
                                 uint8_t **out_bytes,
                                 size_t *out_byte_count,
                                 size_t *out_pair_count,
@@ -2900,7 +4940,13 @@ static int decode_viterbi_bytes(rbdvbt_fec_t fec,
         goto done;
     }
 
-    if (dvbt_viterbi_decode_pairs(pairs, pair_count, &bits, &bit_count, &best_metric) != 0) {
+    if (dvbt_viterbi_decode_pairs(pairs,
+                                  pair_count,
+                                  initial_metrics,
+                                  final_metrics,
+                                  &bits,
+                                  &bit_count,
+                                  &best_metric) != 0) {
         fprintf(stderr, "failed to allocate Viterbi traceback buffers\n");
         goto done;
     }
@@ -2943,14 +4989,17 @@ static int write_selected_viterbi_output(rbdvbt_fec_t fec,
                                          const uint8_t *bytes,
                                          size_t byte_count,
                                          size_t dibit_count,
-                                         size_t pair_count,
-                                         double best_metric,
-                                         const char *path,
-                                         const char *ts_path,
-                                         const rbdvbt_status_context_t *status)
+	                                         size_t pair_count,
+	                                         double best_metric,
+	                                         uint64_t seq_start,
+	                                         uint32_t symbol_count,
+	                                         int continuous,
+	                                         const char *path,
+	                                         const char *ts_path,
+	                                         const rbdvbt_status_context_t *status)
 {
-    FILE *f = NULL;
-    int rc = -1;
+	    FILE *f = NULL;
+	    int rc = -1;
 
     if (path != NULL) {
         f = fopen(path, "wb");
@@ -2964,18 +5013,29 @@ static int write_selected_viterbi_output(rbdvbt_fec_t fec,
         }
     }
 
-    fprintf(stderr,
-            "[viterbi] fec=%s input_dibits=%zu mother_pairs=%zu decoded_bits=%zu decoded_bytes=%zu best_metric=%.2f output=%s\n",
-            rbdvbt_fec_name(fec),
-            dibit_count,
-            pair_count,
-            byte_count * 8u,
-            byte_count,
-            best_metric,
-            path != NULL ? path : "-");
+    if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+        fprintf(stderr,
+                "[viterbi] fec=%s input_dibits=%zu mother_pairs=%zu decoded_bits=%zu decoded_bytes=%zu best_metric=%.2f output=%s\n",
+                rbdvbt_fec_name(fec),
+                dibit_count,
+                pair_count,
+                byte_count * 8u,
+                byte_count,
+                best_metric,
+                path != NULL ? path : "-");
+    }
 
-    if (ts_path != NULL) {
-        if (rbdvbt_outer_recover_ts(bytes, byte_count, ts_path, status) != 0) {
+	    if (ts_path != NULL) {
+	        if (status != NULL && status->live_mode) {
+	            (void)seq_start;
+	            (void)symbol_count;
+	            if (!continuous) {
+	                rbdvbt_outer_reset_live_stream();
+	            }
+	            if (rbdvbt_outer_recover_ts(bytes, byte_count, ts_path, status) != 0) {
+	                goto done;
+	            }
+        } else if (rbdvbt_outer_recover_ts(bytes, byte_count, ts_path, status) != 0) {
             goto done;
         }
     }
@@ -2992,6 +5052,9 @@ done:
 static int write_viterbi_output(rbdvbt_fec_t fec,
                                 const qpsk_dibit_t *dibits,
                                 size_t dibit_count,
+                                uint64_t seq_start,
+                                uint32_t symbol_count,
+                                int continuous,
                                 const char *path,
                                 const char *ts_path,
                                 const rbdvbt_status_context_t *status)
@@ -3007,22 +5070,92 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
     size_t byte_count = 0;
     size_t pair_count = 0;
     double best_metric = 0.0;
-
-    if (fec != RBDVBT_FEC_AUTO) {
-        if (decode_viterbi_bytes(fec, dibits, dibit_count, &bytes, &byte_count, &pair_count, &best_metric) != 0) {
-            return -1;
-        }
-        {
-            int rc = write_selected_viterbi_output(fec,
+    double viterbi_t0 = 0.0;
+    double viterbi_t1 = 0.0;
+    double output_t1 = 0.0;
+	
+	    if (fec != RBDVBT_FEC_AUTO) {
+	        double final_metrics[128];
+		        const double *initial_metrics = NULL;
+		
+                if (status != NULL && status->live_mode) {
+                    viterbi_t0 = monotonic_seconds();
+                }
+		        if (status != NULL && status->live_mode) {
+		            if (live_viterbi_stream_decode_bytes(fec,
+	                                                 dibits,
+	                                                 dibit_count,
+	                                                 continuous,
+	                                                 &bytes,
+	                                                 &byte_count,
+	                                                 &pair_count,
+	                                                 &best_metric) != 0) {
+	                live_viterbi_stream_reset();
+	                live_viterbi_state.valid = 0;
+		                return -1;
+		            }
+                    viterbi_t1 = monotonic_seconds();
+		            if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+	                fprintf(stderr,
+	                        "[viterbi] live_stream=%s fec=%s traceback_bytes=%u emitted_bytes=%zu\n",
+	                        continuous && live_viterbi_stream.valid ? "continued" : "cold",
+	                        rbdvbt_fec_name(fec),
+	                        viterbi_traceback_bytes(fec),
+	                        byte_count);
+	            }
+	        } else {
+	            if (decode_viterbi_bytes(fec,
+	                                     dibits,
+	                                     dibit_count,
+	                                     initial_metrics,
+	                                     final_metrics,
+	                                     &bytes,
+	                                     &byte_count,
+	                                     &pair_count,
+	                                     &best_metric) != 0) {
+	                live_viterbi_state.valid = 0;
+	                return -1;
+	            }
+	        }
+		        {
+	            int rc = write_selected_viterbi_output(fec,
                                                    bytes,
                                                    byte_count,
                                                    dibit_count,
                                                    pair_count,
-                                                   best_metric,
-                                                   path,
-                                                   ts_path,
-                                                   status);
-            free(bytes);
+	                                                   best_metric,
+	                                                   seq_start,
+	                                                   symbol_count,
+	                                                   continuous,
+	                                                   path,
+		                                                   ts_path,
+	                                                   status);
+                if (status != NULL && status->live_mode) {
+                    output_t1 = monotonic_seconds();
+                    fprintf(stderr,
+                            "[viterbi-time] seq=%llu symbols=%u dibits=%zu bytes=%zu viterbi=%.3fs output_outer=%.3fs total=%.3fs\n",
+                            (unsigned long long)seq_start,
+                            symbol_count,
+                            dibit_count,
+                            byte_count,
+                            viterbi_t1 > viterbi_t0 ? viterbi_t1 - viterbi_t0 : 0.0,
+                            output_t1 > viterbi_t1 ? output_t1 - viterbi_t1 : 0.0,
+                            output_t1 > viterbi_t0 ? output_t1 - viterbi_t0 : 0.0);
+                }
+	            free(bytes);
+            if (status != NULL && status->live_mode && rc == 0) {
+                live_viterbi_state.valid = live_viterbi_stream.valid;
+                live_viterbi_state.fec = fec;
+            } else if (status != NULL && status->live_mode) {
+                live_viterbi_stream_reset();
+                live_viterbi_state.valid = 0;
+            } else if (rc == 0) {
+                memcpy(live_viterbi_state.metrics, final_metrics, sizeof(final_metrics));
+                live_viterbi_state.fec = fec;
+                live_viterbi_state.valid = 1;
+            } else {
+                live_viterbi_state.valid = 0;
+            }
             return rc;
         }
     }
@@ -3045,6 +5178,8 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
             if (decode_viterbi_bytes(fec_candidates[i],
                                      dibits,
                                      dibit_count,
+                                     NULL,
+                                     NULL,
                                      &candidate_bytes,
                                      &candidate_byte_count,
                                      &candidate_pair_count,
@@ -3121,14 +5256,562 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
                                                selected_byte_count,
                                                dibit_count,
                                                selected_pair_count,
-                                               selected_metric,
-                                               path,
-                                               ts_path,
+	                                               selected_metric,
+	                                               seq_start,
+	                                               symbol_count,
+	                                               continuous,
+	                                               path,
+	                                               ts_path,
                                                selected_status_ptr);
             free(selected_bytes);
             return rc;
         }
     }
+}
+
+static void *live_decode_worker_main(void *arg)
+{
+    (void)arg;
+
+    for (;;) {
+        live_decode_job_t *job = NULL;
+
+        pthread_mutex_lock(&live_decode_mutex);
+        while (!live_decode_stop && live_decode_head == NULL) {
+            pthread_cond_wait(&live_decode_cond, &live_decode_mutex);
+        }
+        if (live_decode_stop && live_decode_head == NULL) {
+            pthread_mutex_unlock(&live_decode_mutex);
+            break;
+        }
+        job = live_decode_head;
+        live_decode_head = job->next;
+        if (live_decode_head == NULL) {
+            live_decode_tail = NULL;
+        }
+        live_decode_jobs--;
+        if (live_decode_queued_symbols >= job->symbol_count) {
+            live_decode_queued_symbols -= job->symbol_count;
+        } else {
+            live_decode_queued_symbols = 0u;
+        }
+        live_decode_processing_symbols += job->symbol_count;
+        gui_fifo_submit(live_decode_queued_symbols,
+                        live_decode_processing_symbols,
+                        LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+        pthread_cond_signal(&live_decode_space_cond);
+        pthread_mutex_unlock(&live_decode_mutex);
+
+        double worker_t0 = monotonic_seconds();
+        double worker_deint_time = 0.0;
+        double worker_viterbi_outer_time = 0.0;
+        uint32_t processed_symbols = 0u;
+        int worker_failed = 0;
+        int worker_stale = 0;
+
+        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+            fprintf(stderr,
+		                    "[fifo1] worker inner_start seq=%llu symbols=%u cells=%zu model_symbol=%u frontend_continuous=%d queued=%zu\n",
+	                    (unsigned long long)job->seq_start,
+	                    job->symbol_count,
+	                    job->symbol_cell_count,
+	                    job->model_symbol_start,
+                    job->continuous,
+                    live_decode_jobs);
+        }
+        {
+            size_t consume_cells = (size_t)LIVE_VITERBI_CONSUME_SYMBOLS * RBDVBT_DVBT_2K_DATA_CELLS;
+            size_t offset = 0u;
+            uint32_t symbol_offset = 0u;
+
+            if (consume_cells == 0u) {
+                consume_cells = job->symbol_cell_count;
+            }
+            while (offset < job->symbol_cell_count) {
+                qpsk_dibit_t *viterbi_dibits = NULL;
+                size_t viterbi_dibit_count = 0u;
+                size_t count = job->symbol_cell_count - offset;
+                uint32_t symbols = job->symbol_count - symbol_offset;
+                int chunk_continuous = job->continuous || offset > 0u;
+
+                pthread_mutex_lock(&live_decode_mutex);
+                if (job->epoch != live_decode_epoch) {
+                    worker_stale = 1;
+                    pthread_mutex_unlock(&live_decode_mutex);
+                    free(viterbi_dibits);
+                    live_viterbi_stream_reset();
+                    live_viterbi_state.valid = 0;
+                    rbdvbt_outer_reset_live_stream();
+                    break;
+                }
+                pthread_mutex_unlock(&live_decode_mutex);
+
+                if (count > consume_cells) {
+                    count = consume_cells;
+                }
+                symbols = (uint32_t)(count / RBDVBT_DVBT_2K_DATA_CELLS);
+                if (symbols == 0u) {
+                    symbols = 1u;
+                }
+	                uint32_t chunk_model_symbol = job->model_symbols != NULL && symbol_offset < job->symbol_count ?
+	                    job->model_symbols[symbol_offset] :
+	                    job->model_symbol_start + symbol_offset;
+                double chunk_t0 = monotonic_seconds();
+
+	                if (dvbt_qpsk_inner_deinterleave_symbols(&job->symbols[offset],
+                                                         count,
+                                                         chunk_model_symbol,
+                                                         &viterbi_dibits,
+	                                                         &viterbi_dibit_count) != 0) {
+                    fprintf(stderr, "[fifo1] worker inner_deinterleave_failed\n");
+                    live_viterbi_stream_reset();
+                    live_viterbi_state.valid = 0;
+	                    worker_failed = 1;
+	                    break;
+	                }
+                double chunk_deint_t1 = monotonic_seconds();
+                worker_deint_time += chunk_deint_t1 - chunk_t0;
+
+                pthread_mutex_lock(&live_decode_mutex);
+                if (job->epoch != live_decode_epoch) {
+                    worker_stale = 1;
+                    pthread_mutex_unlock(&live_decode_mutex);
+                    free(viterbi_dibits);
+                    live_viterbi_stream_reset();
+                    live_viterbi_state.valid = 0;
+                    rbdvbt_outer_reset_live_stream();
+                    break;
+                }
+                pthread_mutex_unlock(&live_decode_mutex);
+
+	                if (write_viterbi_output(job->fec,
+                                         viterbi_dibits,
+                                         viterbi_dibit_count,
+                                         job->seq_start + symbol_offset,
+                                         symbols,
+                                         chunk_continuous,
+                                         job->path,
+                                         job->ts_path,
+                                         &job->status) != 0) {
+                    fprintf(stderr, "[fifo1] worker inner_failed\n");
+                    live_viterbi_stream_reset();
+                    live_viterbi_state.valid = 0;
+                    free(viterbi_dibits);
+	                    worker_failed = 1;
+	                    break;
+	                }
+                pthread_mutex_lock(&live_decode_mutex);
+                if (job->epoch != live_decode_epoch) {
+                    worker_stale = 1;
+                    pthread_mutex_unlock(&live_decode_mutex);
+                    live_viterbi_stream_reset();
+                    live_viterbi_state.valid = 0;
+                    rbdvbt_outer_reset_live_stream();
+                    break;
+                }
+                pthread_mutex_unlock(&live_decode_mutex);
+                worker_viterbi_outer_time += monotonic_seconds() - chunk_deint_t1;
+	                free(viterbi_dibits);
+                offset += count;
+                symbol_offset += symbols;
+                processed_symbols += symbols;
+            }
+        }
+        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+            double worker_t1 = monotonic_seconds();
+	            fprintf(stderr,
+	                    "[fifo1] worker_done seq=%llu processed_symbols=%u job_symbols=%u deint=%.3fs viterbi_outer=%.3fs elapsed=%.3fs status=%s\n",
+	                    (unsigned long long)job->seq_start,
+	                    processed_symbols,
+	                    job->symbol_count,
+	                    worker_deint_time,
+	                    worker_viterbi_outer_time,
+	                    worker_t1 - worker_t0,
+	                    worker_stale ? "stale" : (worker_failed ? "failed" : "ok"));
+        }
+        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+            fprintf(stderr, "[fifo1] worker inner_done\n");
+        }
+        pthread_mutex_lock(&live_decode_mutex);
+        if (live_decode_processing_symbols >= job->symbol_count) {
+            live_decode_processing_symbols -= job->symbol_count;
+        } else {
+            live_decode_processing_symbols = 0u;
+        }
+        gui_fifo_submit(live_decode_queued_symbols,
+                        live_decode_processing_symbols,
+                        LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+        pthread_cond_broadcast(&live_decode_space_cond);
+        pthread_mutex_unlock(&live_decode_mutex);
+        live_decode_free_job(job);
+    }
+
+    return NULL;
+}
+
+static int live_decode_worker_start(void)
+{
+    if (live_decode_thread_started) {
+        return 0;
+    }
+    live_decode_stop = 0;
+    if (pthread_create(&live_decode_thread, NULL, live_decode_worker_main, NULL) != 0) {
+        fprintf(stderr, "failed to start live decode worker\n");
+        return -1;
+    }
+    live_decode_thread_started = 1;
+    return 0;
+}
+
+static int live_decode_enqueue(rbdvbt_fec_t fec,
+                               const complexf_t *symbols,
+                               const uint32_t *model_symbols,
+                               size_t symbol_cell_count,
+                               uint64_t seq_start,
+                               uint32_t model_symbol_start,
+                               uint32_t symbol_count,
+                               int continuous,
+                               const char *path,
+                               const char *ts_path,
+                               const rbdvbt_status_context_t *status)
+{
+    live_decode_job_t *job;
+
+    if (live_decode_worker_start() != 0) {
+        return -1;
+    }
+
+    job = calloc(1, sizeof(*job));
+    if (job == NULL) {
+        fprintf(stderr, "failed to allocate live decode job\n");
+        return -1;
+    }
+    job->symbols = malloc(symbol_cell_count * sizeof(*job->symbols));
+    if (job->symbols == NULL) {
+        fprintf(stderr, "failed to allocate live decode job symbols\n");
+        free(job);
+        return -1;
+    }
+    memcpy(job->symbols, symbols, symbol_cell_count * sizeof(*job->symbols));
+    if (symbol_count > 0u) {
+        job->model_symbols = malloc((size_t)symbol_count * sizeof(*job->model_symbols));
+        if (job->model_symbols == NULL) {
+            fprintf(stderr, "failed to allocate live decode job model symbols\n");
+            free(job->symbols);
+            free(job);
+            return -1;
+        }
+        if (model_symbols != NULL) {
+            memcpy(job->model_symbols, model_symbols, (size_t)symbol_count * sizeof(*job->model_symbols));
+        } else {
+            for (uint32_t i = 0; i < symbol_count; ++i) {
+                job->model_symbols[i] = model_symbol_start + i;
+            }
+        }
+    }
+    job->symbol_cell_count = symbol_cell_count;
+    job->seq_start = seq_start;
+    job->model_symbol_start = model_symbol_start;
+    job->symbol_count = symbol_count;
+    job->continuous = continuous;
+    job->fec = fec;
+    job->path = path;
+    job->ts_path = ts_path;
+    job->status = *status;
+    snprintf(job->symbol_rate, sizeof(job->symbol_rate), "%s", status->symbol_rate != NULL ? status->symbol_rate : "unknown");
+    job->status.symbol_rate = job->symbol_rate;
+
+    pthread_mutex_lock(&live_decode_mutex);
+    if (!live_decode_stop &&
+        live_decode_queued_symbols + symbol_count > LIVE_DECODE_MAX_QUEUED_SYMBOLS) {
+        live_decode_gap_pending = 1;
+        gui_fifo_submit(live_decode_queued_symbols,
+                        live_decode_processing_symbols,
+                        LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+            fprintf(stderr,
+                    "[fifo1] backlog full dropping incoming_symbols=%u incoming_bits=%zu queued_symbols=%u processing_symbols=%u capacity_symbols=%u\n",
+                    symbol_count,
+                    symbol_cell_count * 2u,
+                    live_decode_queued_symbols,
+                    live_decode_processing_symbols,
+                    LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+        }
+        live_health_note_fifo(live_decode_queued_symbols,
+                              live_decode_processing_symbols,
+                              symbol_count);
+        pthread_mutex_unlock(&live_decode_mutex);
+        live_decode_free_job(job);
+        return 0;
+    }
+    if (live_decode_stop) {
+        pthread_mutex_unlock(&live_decode_mutex);
+        live_decode_free_job(job);
+        return -1;
+    }
+    job->epoch = live_decode_epoch;
+    if (live_decode_gap_pending) {
+        job->continuous = 0;
+        live_decode_gap_pending = 0;
+    }
+    if (live_decode_tail != NULL) {
+        live_decode_tail->next = job;
+    } else {
+        live_decode_head = job;
+    }
+    live_decode_tail = job;
+    live_decode_jobs++;
+    live_decode_queued_symbols += symbol_count;
+    gui_fifo_submit(live_decode_queued_symbols,
+                    live_decode_processing_symbols,
+                    LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+    live_health_note_fifo(live_decode_queued_symbols,
+                          live_decode_processing_symbols,
+                          0u);
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) || live_decode_jobs > 2u) {
+        fprintf(stderr,
+		                "[fifo1] queued_inner seq=%llu symbols=%u cells=%zu model_symbol=%u frontend_continuous=%d queued=%zu queued_symbols=%u processing_symbols=%u\n",
+		                (unsigned long long)seq_start,
+		                symbol_count,
+		                symbol_cell_count,
+		                model_symbol_start,
+                job->continuous,
+                live_decode_jobs,
+                live_decode_queued_symbols,
+                live_decode_processing_symbols);
+    }
+    pthread_cond_signal(&live_decode_cond);
+    pthread_mutex_unlock(&live_decode_mutex);
+    return 0;
+}
+
+void rbdvbt_live_decoder_shutdown(void)
+{
+    if (live_decode_thread_started) {
+        pthread_mutex_lock(&live_decode_mutex);
+        live_decode_stop = 1;
+        pthread_cond_broadcast(&live_decode_cond);
+        pthread_cond_broadcast(&live_decode_space_cond);
+        pthread_mutex_unlock(&live_decode_mutex);
+        pthread_join(live_decode_thread, NULL);
+        live_decode_thread_started = 0;
+    }
+
+    (void)live_decode_drop_symbols_locked(live_decode_queued_symbols);
+    live_decode_queued_symbols = 0u;
+    live_decode_processing_symbols = 0u;
+    live_decode_gap_pending = 0;
+    gui_fifo_submit(live_decode_queued_symbols,
+                    live_decode_processing_symbols,
+                    LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+
+}
+
+static int live_soft_dibit_fifo_process(rbdvbt_fec_t fec,
+                                        const complexf_t *symbols,
+                                        const uint32_t *model_symbols,
+                                        size_t symbol_cell_count,
+                                        uint32_t symbol_count,
+                                        uint64_t symbol_seq_start,
+                                        uint32_t model_symbol_start,
+                                        size_t preferred_window,
+                                        int continuous_frontend,
+                                        const char *path,
+                                        const char *ts_path,
+                                        const rbdvbt_status_context_t *status)
+{
+    int rc = 0;
+    uint64_t append_seq = symbol_seq_start;
+
+    if (!continuous_frontend) {
+        live_soft_dibit_fifo.count = 0u;
+        live_soft_dibit_fifo.symbol_count = 0u;
+        live_soft_dibit_fifo.model_symbol_start = model_symbol_start;
+        live_soft_dibit_fifo.continuous = 0;
+        live_viterbi_stream_reset();
+        live_viterbi_state.valid = 0;
+    }
+
+    if (!continuous_frontend && symbol_count > 0u) {
+        preferred_window = (size_t)symbol_count * RBDVBT_DVBT_2K_DATA_CELLS;
+    } else if (preferred_window == 0u) {
+        preferred_window = (size_t)LIVE_DECODE_WINDOW_SYMBOLS * RBDVBT_DVBT_2K_DATA_CELLS;
+    }
+    if (preferred_window == 0u) {
+        return 0;
+    }
+
+    if (symbol_cell_count > 0u) {
+        size_t need = live_soft_dibit_fifo.count + symbol_cell_count;
+
+        if (need > live_soft_dibit_fifo.cap) {
+            size_t new_cap = live_soft_dibit_fifo.cap != 0u ? live_soft_dibit_fifo.cap : preferred_window * 2u;
+            complexf_t *new_items;
+
+            while (new_cap < need) {
+                new_cap *= 2u;
+            }
+            new_items = realloc(live_soft_dibit_fifo.items, new_cap * sizeof(*new_items));
+            if (new_items == NULL) {
+                fprintf(stderr, "failed to grow live soft-dibit FIFO\n");
+                live_soft_dibit_fifo.count = 0u;
+                live_viterbi_stream_reset();
+                live_viterbi_state.valid = 0;
+                return -1;
+            }
+            live_soft_dibit_fifo.items = new_items;
+            live_soft_dibit_fifo.cap = new_cap;
+        }
+        if ((size_t)live_soft_dibit_fifo.symbol_count + (size_t)symbol_count > live_soft_dibit_fifo.symbol_cap) {
+            size_t need_symbols = (size_t)live_soft_dibit_fifo.symbol_count + (size_t)symbol_count;
+            size_t new_symbol_cap = live_soft_dibit_fifo.symbol_cap != 0u ? live_soft_dibit_fifo.symbol_cap : 512u;
+            uint32_t *new_model_symbols;
+
+            while (new_symbol_cap < need_symbols) {
+                new_symbol_cap *= 2u;
+            }
+            new_model_symbols = realloc(live_soft_dibit_fifo.model_symbols,
+                                        new_symbol_cap * sizeof(*new_model_symbols));
+            if (new_model_symbols == NULL) {
+                fprintf(stderr, "failed to grow live soft-dibit model-symbol FIFO\n");
+                live_soft_dibit_fifo.count = 0u;
+                live_soft_dibit_fifo.symbol_count = 0u;
+                live_viterbi_stream_reset();
+                live_viterbi_state.valid = 0;
+                return -1;
+            }
+            live_soft_dibit_fifo.model_symbols = new_model_symbols;
+            live_soft_dibit_fifo.symbol_cap = new_symbol_cap;
+        }
+
+        memcpy(&live_soft_dibit_fifo.items[live_soft_dibit_fifo.count],
+               symbols,
+               symbol_cell_count * sizeof(*symbols));
+        if (symbol_count > 0u) {
+            if (model_symbols != NULL) {
+                memcpy(&live_soft_dibit_fifo.model_symbols[live_soft_dibit_fifo.symbol_count],
+                       model_symbols,
+                       (size_t)symbol_count * sizeof(*model_symbols));
+            } else {
+                for (uint32_t i = 0; i < symbol_count; ++i) {
+                    live_soft_dibit_fifo.model_symbols[live_soft_dibit_fifo.symbol_count + i] =
+                        model_symbol_start + i;
+                }
+            }
+        }
+        if (live_soft_dibit_fifo.count == 0u) {
+            live_soft_dibit_fifo.seq_start = append_seq;
+            live_soft_dibit_fifo.model_symbol_start = model_symbol_start;
+        }
+        live_soft_dibit_fifo.count += symbol_cell_count;
+        live_soft_dibit_fifo.symbol_count += symbol_count;
+        live_soft_dibit_fifo.continuous = continuous_frontend;
+        live_soft_next_symbol_seq = symbol_seq_start + symbol_count;
+    }
+
+    if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+        fprintf(stderr,
+	                "[softfifo] appended_seq=%llu appended_symbols=%u frame_symbols=%u buffered_symbols=%u buffered_dibits=%zu window_symbols=%u frontend_continuous=%d\n",
+	                (unsigned long long)append_seq,
+                symbol_count,
+                LIVE_SOFT_FRAME_SYMBOLS,
+                live_soft_dibit_fifo.symbol_count,
+                live_soft_dibit_fifo.count,
+                (uint32_t)(preferred_window / RBDVBT_DVBT_2K_DATA_CELLS),
+                continuous_frontend);
+    }
+
+    while (live_soft_dibit_fifo.count >= preferred_window &&
+           live_soft_dibit_fifo.symbol_count >= (uint32_t)(preferred_window / RBDVBT_DVBT_2K_DATA_CELLS)) {
+        uint32_t window_symbols = (uint32_t)(preferred_window / RBDVBT_DVBT_2K_DATA_CELLS);
+        uint64_t window_seq = live_soft_dibit_fifo.seq_start;
+        int window_continuous = live_soft_dibit_fifo.continuous;
+        int window_rc = status != NULL && status->live_mode ?
+            live_decode_enqueue(fec,
+                                live_soft_dibit_fifo.items,
+                                live_soft_dibit_fifo.model_symbols,
+                                preferred_window,
+                                window_seq,
+                                live_soft_dibit_fifo.model_symbol_start,
+                                window_symbols,
+                                window_continuous,
+                                path,
+                                ts_path,
+                                status) : -1;
+
+        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+            fprintf(stderr,
+                    "[frontend-batch] fifo1_window seq=%llu symbols=%u cells=%zu frontend_continuous=%d buffered_symbols=%u\n",
+                    (unsigned long long)window_seq,
+                    window_symbols,
+                    preferred_window,
+                    window_continuous,
+                    live_soft_dibit_fifo.symbol_count);
+        }
+
+        if (!(status != NULL && status->live_mode)) {
+            qpsk_dibit_t *viterbi_dibits = NULL;
+            size_t viterbi_dibit_count = 0u;
+
+            if (dvbt_qpsk_inner_deinterleave_symbols(live_soft_dibit_fifo.items,
+                                                     preferred_window,
+                                                     live_soft_dibit_fifo.model_symbol_start,
+                                                     &viterbi_dibits,
+                                                     &viterbi_dibit_count) != 0) {
+                window_rc = -1;
+            } else {
+                window_rc = write_viterbi_output(fec,
+                                                 viterbi_dibits,
+                                                 viterbi_dibit_count,
+                                                 window_seq,
+                                                 window_symbols,
+                                                 window_continuous,
+                                                 path,
+                                                 ts_path,
+                                                 status);
+            }
+            free(viterbi_dibits);
+        }
+
+        if (window_rc != 0) {
+            rc = window_rc;
+            if (!continuous_frontend) {
+                live_soft_dibit_fifo.count = 0u;
+                live_soft_dibit_fifo.symbol_count = 0u;
+                live_viterbi_stream_reset();
+                live_viterbi_state.valid = 0;
+                break;
+            }
+        }
+
+        live_soft_dibit_fifo.count -= preferred_window;
+        live_soft_dibit_fifo.symbol_count -= window_symbols;
+        live_soft_dibit_fifo.seq_start += window_symbols;
+        live_soft_dibit_fifo.model_symbol_start =
+            live_soft_dibit_fifo.symbol_count > 0u ?
+            live_soft_dibit_fifo.model_symbols[window_symbols] :
+            live_soft_dibit_fifo.model_symbol_start + window_symbols;
+        if (live_soft_dibit_fifo.count > 0u) {
+            memmove(live_soft_dibit_fifo.items,
+                    &live_soft_dibit_fifo.items[preferred_window],
+                    live_soft_dibit_fifo.count * sizeof(*live_soft_dibit_fifo.items));
+        }
+        if (live_soft_dibit_fifo.symbol_count > 0u) {
+            memmove(live_soft_dibit_fifo.model_symbols,
+                    &live_soft_dibit_fifo.model_symbols[window_symbols],
+                    (size_t)live_soft_dibit_fifo.symbol_count * sizeof(*live_soft_dibit_fifo.model_symbols));
+        }
+    }
+
+    if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+        fprintf(stderr,
+                "[softfifo] after_consume seq_start=%llu buffered_symbols=%u buffered_dibits=%zu\n",
+                (unsigned long long)live_soft_dibit_fifo.seq_start,
+                live_soft_dibit_fifo.symbol_count,
+                live_soft_dibit_fifo.count);
+    }
+
+    return rc;
 }
 
 static int estimate_dvbt2k_pilot_phase(const complexf_t *shifted,
@@ -3284,10 +5967,14 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     FILE *eq_out = NULL;
     FILE *eq_svg = NULL;
     FILE *demap_out = NULL;
-    qpsk_dibit_t *viterbi_dibits = NULL;
-    size_t viterbi_dibit_count = 0;
-    size_t viterbi_dibit_cap = 0;
+    complexf_t *viterbi_symbols = NULL;
+    uint32_t *viterbi_model_symbols = NULL;
+    size_t viterbi_symbol_cell_count = 0;
+    size_t viterbi_symbol_cell_cap = 0;
+    uint32_t viterbi_model_symbol_count = 0;
     uint32_t max_symbols = cfg->probe_symbols;
+    uint32_t total_symbols = cfg->probe_symbols;
+    uint32_t skip_symbols = 0;
     uint32_t used_symbols = 0;
     uint64_t point_index = 0;
     uint64_t svg_stride = 1;
@@ -3300,9 +5987,35 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     int best_conjugate = 0;
     int best_symbol_phase = 0;
     double best_alignment_lock = -1.0;
+    uint64_t frame_symbol_seq_start = live_soft_next_symbol_seq;
+    uint64_t first_symbol_sample_abs = 0u;
+    uint64_t next_symbol_sample_abs = 0u;
+    uint64_t expected_symbol_sample_abs = 0u;
+    int frontend_continuous = 0;
     int rc = -1;
+    double demod_t0 = 0.0;
+    double demod_scan_t1 = 0.0;
 
     rbdvbt_dvbt_2k_model_init();
+
+    if (cfg->live_mode) {
+        size_t first_base = (size_t)start + gi_len;
+
+        if (count > first_base + RBDVBT_DVBT_2K_FFT_SIZE) {
+            uint32_t available_symbols = (uint32_t)((count - first_base - RBDVBT_DVBT_2K_FFT_SIZE) / symbol_len) + 1u;
+
+            if (available_symbols > max_symbols) {
+                if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+                    fprintf(stderr,
+                            "[ofdm-live] expanding demap symbols from %u to %u to avoid leaving complete OFDM symbols behind\n",
+                            max_symbols,
+                            available_symbols);
+                }
+                max_symbols = available_symbols;
+                total_symbols = available_symbols;
+            }
+        }
+    }
 
     fft_in = fftwf_malloc(sizeof(*fft_in) * RBDVBT_DVBT_2K_FFT_SIZE);
     fft_out = fftwf_malloc(sizeof(*fft_out) * RBDVBT_DVBT_2K_FFT_SIZE);
@@ -3322,15 +6035,37 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         goto done;
     }
 
+    demod_t0 = monotonic_seconds();
     {
         uint32_t scan_symbols = max_symbols > 24u ? 24u : max_symbols;
         int bin_shift;
         int conjugate;
         int symbol_phase;
+        int bin_first = -64;
+        int bin_last = 64;
+        int conjugate_first = 0;
+        int conjugate_last = 1;
+        int phase_first = 0;
+        int phase_last = 3;
 
-        for (conjugate = 0; conjugate <= 1; ++conjugate) {
-            for (symbol_phase = 0; symbol_phase < 4; ++symbol_phase) {
-                for (bin_shift = -64; bin_shift <= 64; ++bin_shift) {
+        if (cfg->live_mode) {
+            scan_symbols = max_symbols > 4u ? 4u : max_symbols;
+            if (live_frontend_cursor.valid &&
+                live_frontend_cursor.sample_rate_hz == cfg->sample_rate_hz &&
+                live_frontend_cursor.symbol_len == symbol_len) {
+                bin_first = live_frontend_cursor.bin_shift;
+                bin_last = bin_first;
+                conjugate_first = live_frontend_cursor.conjugate;
+                conjugate_last = conjugate_first;
+            } else {
+                bin_first = -16;
+                bin_last = 16;
+            }
+        }
+
+        for (conjugate = conjugate_first; conjugate <= conjugate_last; ++conjugate) {
+            for (symbol_phase = phase_first; symbol_phase <= phase_last; ++symbol_phase) {
+                for (bin_shift = bin_first; bin_shift <= bin_last; ++bin_shift) {
                     double lock_sum = 0.0;
                     uint32_t lock_count = 0;
 
@@ -3382,22 +6117,46 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             }
         }
 
-        fprintf(stderr,
-                "[pilot-scan] best_bin_shift=%d conjugate=%d symbol_phase_mod4=%d pilot_lock=%.5f scan_symbols=%u\n",
-                best_bin_shift,
-                best_conjugate,
-                best_symbol_phase,
-                best_alignment_lock,
-                scan_symbols);
+        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+            fprintf(stderr,
+                    "[pilot-scan] best_bin_shift=%d conjugate=%d symbol_phase_mod4=%d pilot_lock=%.5f scan_symbols=%u\n",
+                    best_bin_shift,
+                    best_conjugate,
+                    best_symbol_phase,
+                    best_alignment_lock,
+                    scan_symbols);
+        }
+        demod_scan_t1 = monotonic_seconds();
     }
 
-    out = fopen(cfg->constellation_out, "w");
-    if (out == NULL) {
-        fprintf(stderr, "failed to open constellation output: %s\n", cfg->constellation_out);
-        goto done;
+    if (cfg->live_mode && live_ofdm_prefix_count > 0u) {
+        while (skip_symbols < total_symbols) {
+            size_t base = (size_t)start + (size_t)skip_symbols * symbol_len + gi_len;
+
+            if (base + RBDVBT_DVBT_2K_FFT_SIZE > live_ofdm_prefix_count) {
+                break;
+            }
+            skip_symbols++;
+        }
+        total_symbols = max_symbols + skip_symbols;
+        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+            fprintf(stderr,
+                    "[ofdm-live] demod_skip_symbols=%u demod_total_symbols=%u prefix=%zu\n",
+                    skip_symbols,
+                    total_symbols,
+                    live_ofdm_prefix_count);
+        }
     }
-    fprintf(out,
-            "i,q,symbol,logical_carrier,fft_bin,role,phase_intercept,phase_slope,pilot_count,pilot_lock,normalizer\n");
+
+    if (cfg->constellation_out != NULL) {
+        out = fopen(cfg->constellation_out, "w");
+        if (out == NULL) {
+            fprintf(stderr, "failed to open constellation output: %s\n", cfg->constellation_out);
+            goto done;
+        }
+        fprintf(out,
+                "i,q,symbol,logical_carrier,fft_bin,role,phase_intercept,phase_slope,pilot_count,pilot_lock,normalizer\n");
+    }
 
     if (cfg->constellation_svg != NULL) {
         uint64_t estimated = (uint64_t)max_symbols * RBDVBT_DVBT_2K_DATA_CELLS;
@@ -3443,15 +6202,16 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     }
 
     if (cfg->viterbi_out != NULL || cfg->ts_out != NULL) {
-        viterbi_dibit_cap = (size_t)max_symbols * RBDVBT_DVBT_2K_DATA_CELLS;
-        viterbi_dibits = malloc(viterbi_dibit_cap * sizeof(*viterbi_dibits));
-        if (viterbi_dibits == NULL) {
-            fprintf(stderr, "failed to allocate Viterbi dibit buffer\n");
+        viterbi_symbol_cell_cap = (size_t)max_symbols * RBDVBT_DVBT_2K_DATA_CELLS;
+        viterbi_symbols = malloc(viterbi_symbol_cell_cap * sizeof(*viterbi_symbols));
+        viterbi_model_symbols = malloc((size_t)max_symbols * sizeof(*viterbi_model_symbols));
+        if (viterbi_symbols == NULL || viterbi_model_symbols == NULL) {
+            fprintf(stderr, "failed to allocate Viterbi symbol buffers\n");
             goto done;
         }
     }
 
-    for (uint32_t s = 0; s < max_symbols; ++s) {
+    for (uint32_t s = 0; s < total_symbols; ++s) {
         size_t base = (size_t)start + (size_t)s * symbol_len + gi_len;
         uint32_t model_symbol = s + (uint32_t)best_symbol_phase;
         uint8_t rx_sio[RBDVBT_DVBT_2K_DATA_CELLS];
@@ -3493,6 +6253,10 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                                         &phase_slope,
                                         &pilot_lock,
                                         &pilot_count) != 0) {
+            continue;
+        }
+
+        if (s < skip_symbols) {
             continue;
         }
 
@@ -3566,19 +6330,21 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 evm_count++;
             }
 
-            fprintf(out,
-                    "%.7f,%.7f,%u,%u,%u,%s,%.9f,%.12f,%u,%.7f,%.9f\n",
-                    z.re,
-                    z.im,
-                    s,
-                    logical_k,
-                    (uint32_t)bin,
-                    dvbt_role_name(RBDVBT_DVBT_CARRIER_DATA),
-                    phase_intercept,
-                    phase_slope,
-                    pilot_count,
-                    pilot_lock,
-                    normalizer);
+            if (out != NULL) {
+                fprintf(out,
+                        "%.7f,%.7f,%u,%u,%u,%s,%.9f,%.12f,%u,%.7f,%.9f\n",
+                        z.re,
+                        z.im,
+                        s,
+                        logical_k,
+                        (uint32_t)bin,
+                        dvbt_role_name(RBDVBT_DVBT_CARRIER_DATA),
+                        phase_intercept,
+                        phase_slope,
+                        pilot_count,
+                        pilot_lock,
+                        normalizer);
+            }
             if (eq_out != NULL) {
                 fprintf(eq_out,
                         "%.7f,%.7f,%u,%u,%u,%s,%.9f,%.12f,%u,%.7f,%.9f\n",
@@ -3603,17 +6369,15 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             point_index++;
         }
 
-        if (demap_out != NULL || viterbi_dibits != NULL) {
+        if (demap_out != NULL) {
             dvbt2k_symbol_deinterleave_qpsk(model_symbol, rx_sio, rx_sii);
             dvbt2k_symbol_deinterleave_complex(model_symbol, rx_sio_soft, rx_sii_soft);
 
             for (uint32_t block = 0; block < RBDVBT_DVBT_2K_DATA_CELLS / 126u; ++block) {
                 uint8_t dibits[126];
-                qpsk_dibit_t soft_dibits[126];
                 uint32_t base_index = block * 126u;
 
                 dvbt_qpsk_bit_deinterleave_block(&rx_sii[base_index], dibits);
-                dvbt_qpsk_soft_bit_deinterleave_block(&rx_sii_soft[base_index], dibits, soft_dibits);
 
                 for (uint32_t w = 0; w < 126u; ++w) {
                     uint32_t idx = base_index + w;
@@ -3630,11 +6394,22 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                                 rx_sio[idx],
                                 rx_sii[idx]);
                     }
-                    if (viterbi_dibits != NULL && viterbi_dibit_count < viterbi_dibit_cap) {
-                        viterbi_dibits[viterbi_dibit_count++] = soft_dibits[w];
-                    }
                     demap_dibits++;
                 }
+            }
+        }
+
+        if (viterbi_symbols != NULL &&
+            viterbi_symbol_cell_count + RBDVBT_DVBT_2K_DATA_CELLS <= viterbi_symbol_cell_cap) {
+            memcpy(&viterbi_symbols[viterbi_symbol_cell_count],
+                   rx_sio_soft,
+                   RBDVBT_DVBT_2K_DATA_CELLS * sizeof(*viterbi_symbols));
+            viterbi_symbol_cell_count += RBDVBT_DVBT_2K_DATA_CELLS;
+            if (viterbi_model_symbols != NULL && viterbi_model_symbol_count < max_symbols) {
+                viterbi_model_symbols[viterbi_model_symbol_count++] = model_symbol;
+            }
+            if (demap_out == NULL) {
+                demap_dibits += RBDVBT_DVBT_2K_DATA_CELLS;
             }
         }
 
@@ -3647,6 +6422,114 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         fprintf(stderr, "[dvbt2k] no complete pilot-locked OFDM symbols available\n");
         goto done;
     }
+
+	if (cfg->live_mode) {
+	    uint32_t first_used_symbol_phase = (uint32_t)((best_symbol_phase + (int)(skip_symbols & 0x03u)) & 0x03);
+        int health_have_continuity = 0;
+        uint64_t health_delta_samples = 0u;
+        uint64_t health_phase_delta_samples = 0u;
+
+	    first_symbol_sample_abs = live_resampled_chunk_start_abs +
+	        (uint64_t)start +
+	        (uint64_t)skip_symbols * (uint64_t)symbol_len;
+        next_symbol_sample_abs = first_symbol_sample_abs + (uint64_t)used_symbols * (uint64_t)symbol_len;
+        if (live_frontend_cursor.valid &&
+            live_frontend_cursor.sample_rate_hz == cfg->sample_rate_hz &&
+            live_frontend_cursor.symbol_len == symbol_len) {
+            uint64_t expected = live_frontend_cursor.next_symbol_sample_abs;
+            uint64_t delta = first_symbol_sample_abs > expected ?
+                first_symbol_sample_abs - expected :
+                expected - first_symbol_sample_abs;
+            uint64_t phase_delta = symbol_phase_delta(first_symbol_sample_abs, expected, symbol_len);
+            int64_t signed_delta = (int64_t)first_symbol_sample_abs - (int64_t)expected;
+            int64_t rounded_delta_symbols = symbol_len != 0u ?
+                (signed_delta >= 0 ?
+                    (signed_delta + (int64_t)symbol_len / 2) / (int64_t)symbol_len :
+                    -((-signed_delta + (int64_t)symbol_len / 2) / (int64_t)symbol_len)) :
+	                0;
+
+		    expected_symbol_sample_abs = expected;
+            health_have_continuity = 1;
+            health_delta_samples = delta;
+            health_phase_delta_samples = phase_delta;
+		    if (delta <= LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR &&
+		        phase_delta <= LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR &&
+		        best_bin_shift == live_frontend_cursor.bin_shift &&
+	        best_conjugate == live_frontend_cursor.conjugate &&
+	        pilot_lock_count > 0 &&
+	        (pilot_lock_sum / (double)pilot_lock_count) >= 0.45) {
+	        frontend_continuous = 1;
+	        frame_symbol_seq_start = live_frontend_cursor.symbol_seq;
+	    }
+            if (cfg->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                fprintf(stderr,
+                        "[frontend-cont] mode=%s first_abs=%llu expected_abs=%llu delta=%lld delta_symbols=%lld phase_delta=%llu start=%u skip=%u used=%u seq=%llu cursor_seq=%llu continuous=%d bin=%d/%d conj=%d/%d lock=%.5f\n",
+                        live_frontend_sync_mode,
+                        (unsigned long long)first_symbol_sample_abs,
+                        (unsigned long long)expected,
+                        (long long)signed_delta,
+                        (long long)rounded_delta_symbols,
+                        (unsigned long long)phase_delta,
+                        start,
+                        skip_symbols,
+                        used_symbols,
+                        (unsigned long long)frame_symbol_seq_start,
+                        (unsigned long long)live_frontend_cursor.symbol_seq,
+                        frontend_continuous,
+                        best_bin_shift,
+                        live_frontend_cursor.bin_shift,
+                        best_conjugate,
+                        live_frontend_cursor.conjugate,
+                        pilot_lock_count > 0 ? pilot_lock_sum / (double)pilot_lock_count : 0.0);
+            }
+        }
+        if (!frontend_continuous) {
+            uint32_t processing_symbols;
+
+            frame_symbol_seq_start = live_soft_next_symbol_seq;
+            live_viterbi_stream_reset();
+            live_viterbi_state.valid = 0;
+            processing_symbols = live_decode_invalidate_queued("frontend-discontinuity");
+            if (processing_symbols > 0u) {
+                live_decode_wait_idle("frontend-discontinuity");
+            }
+            rbdvbt_outer_reset_live_stream();
+        }
+        live_symbol_continuity_ok = frontend_continuous;
+        live_frontend_cursor.valid = 1;
+        live_frontend_cursor.sample_rate_hz = cfg->sample_rate_hz;
+        live_frontend_cursor.symbol_len = symbol_len;
+        live_frontend_cursor.symbol_seq = frame_symbol_seq_start + used_symbols;
+        live_frontend_cursor.next_symbol_sample_abs = next_symbol_sample_abs;
+        live_frontend_cursor.last_symbol_sample_abs = first_symbol_sample_abs;
+        live_frontend_cursor.cfo_hz = cfo_hz;
+        live_frontend_cursor.bin_shift = best_bin_shift;
+        live_frontend_cursor.conjugate = best_conjugate;
+        live_frontend_cursor.symbol_phase_mod4 =
+            (best_symbol_phase + (int)((skip_symbols + used_symbols) & 0x03u)) & 0x03;
+        live_frontend_cursor.pilot_lock = pilot_lock_count > 0 ? pilot_lock_sum / (double)pilot_lock_count : 0.0;
+	        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+	            fprintf(stderr,
+		                    "[frontend-meta] seq=%llu symbols=%u first_abs=%llu next_abs=%llu expected_abs=%llu frontend_continuous=%d symbol_phase=%u local_symbol_phase=%d expected_symbol_phase=%d resamp_range=%llu..%llu\n",
+	                    (unsigned long long)frame_symbol_seq_start,
+	                    used_symbols,
+	                    (unsigned long long)first_symbol_sample_abs,
+	                    (unsigned long long)next_symbol_sample_abs,
+	                    (unsigned long long)expected_symbol_sample_abs,
+	                    frontend_continuous,
+	                    first_used_symbol_phase,
+	                    best_symbol_phase,
+	                    live_frontend_cursor.symbol_phase_mod4 & 0x03,
+	                    (unsigned long long)live_resampled_chunk_start_abs,
+		                    (unsigned long long)(live_resampled_chunk_start_abs + live_resampled_chunk_count));
+	        }
+        live_health_note_frontend(live_frontend_cursor.pilot_lock,
+                                  evm_count > 0 && evm_error_sum > 0.0 ? 10.0 * log10((double)evm_count / evm_error_sum) : 0.0,
+                                  health_have_continuity,
+                                  frontend_continuous,
+                                  health_delta_samples,
+                                  health_phase_delta_samples);
+	    }
 
     if (svg != NULL) {
         fprintf(svg, "</svg>\n");
@@ -3687,15 +6570,93 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         status.constellation = "QPSK";
         status.snr_db = snr_db;
         status.pilot_lock = avg_pilot_lock;
+        status.cfo_hz = cfo_hz;
+        status.bin_shift = best_bin_shift;
+        status.symbol_phase = best_symbol_phase;
         status.input_samples = cfg->max_samples;
         status.lock_quality = (uint32_t)(avg_pilot_lock * 100.0 + 0.5);
         if (status.lock_quality > 100u) {
             status.lock_quality = 100u;
         }
         status.ssi = (uint32_t)(ssi_float + 0.5);
+        status.wait_video_start = cfg->wait_video_start;
+        status.live_mode = cfg->live_mode;
+        status.gui_enabled = cfg->gui;
 
-        if (write_viterbi_output(cfg->fec, viterbi_dibits, viterbi_dibit_count, cfg->viterbi_out, cfg->ts_out, &status) != 0) {
-            goto done;
+        if (cfg->live_mode) {
+            live_status_hold.valid = 1;
+            live_status_hold.pilot_lock = avg_pilot_lock;
+            live_status_hold.snr_db = snr_db;
+            live_status_hold.cfo_hz = cfo_hz;
+            live_status_hold.bin_shift = best_bin_shift;
+            live_status_hold.symbol_phase = best_symbol_phase;
+        }
+
+        if (cfg->gui) {
+            gui_constellation_submit(viterbi_symbols,
+                                     viterbi_symbol_cell_count,
+                                     "QPSK",
+                                     snr_db,
+                                     avg_pilot_lock,
+                                     cfo_hz);
+        }
+
+	        if (cfg->live_mode) {
+	            if (avg_pilot_lock < LIVE_METADATA_PILOT_LOCK_MIN) {
+                    live_health_note_low_pilot();
+	                fprintf(stderr,
+	                        "[dvbt2k] dropping low-pilot live chunk avg_pilot_lock=%.5f snr=%.2fdB; resetting inner continuity\n",
+	                        avg_pilot_lock,
+                        snr_db);
+                live_symbol_continuity_ok = 0;
+                live_soft_dibit_fifo.count = 0u;
+                live_soft_dibit_fifo.symbol_count = 0u;
+                live_viterbi_stream_reset();
+                live_viterbi_state.valid = 0;
+                if (live_decode_invalidate_queued("low-pilot") > 0u) {
+                    live_decode_wait_idle("low-pilot");
+                }
+                rbdvbt_outer_reset_live_stream();
+                live_frontend_cursor.valid = 0;
+                rc = 0;
+                goto done;
+            }
+            if (live_soft_dibit_fifo_process(cfg->fec,
+                                             viterbi_symbols,
+                                             viterbi_model_symbols,
+                                             viterbi_symbol_cell_count,
+                                             used_symbols,
+                                             frame_symbol_seq_start,
+                                             skip_symbols + (uint32_t)best_symbol_phase,
+                                             (size_t)used_symbols * RBDVBT_DVBT_2K_DATA_CELLS,
+                                             live_symbol_continuity_ok,
+                                             cfg->viterbi_out,
+                                             cfg->ts_out,
+                                             &status) != 0) {
+                goto done;
+            }
+        } else {
+            qpsk_dibit_t *viterbi_dibits = NULL;
+            size_t viterbi_dibit_count = 0u;
+
+            if (dvbt_qpsk_inner_deinterleave_symbols(viterbi_symbols,
+                                                     viterbi_symbol_cell_count,
+                                                     skip_symbols + (uint32_t)best_symbol_phase,
+                                                     &viterbi_dibits,
+                                                     &viterbi_dibit_count) != 0 ||
+                write_viterbi_output(cfg->fec,
+                                     viterbi_dibits,
+                                     viterbi_dibit_count,
+                                     frame_symbol_seq_start,
+                                     used_symbols,
+                                     0,
+                                     cfg->viterbi_out,
+                                     cfg->ts_out,
+                                     &status) != 0) {
+                free(viterbi_dibits);
+                goto done;
+            }
+            free(viterbi_dibits);
         }
     }
 
@@ -3712,12 +6673,21 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             best_bin_shift,
             best_conjugate,
             best_symbol_phase,
-            cfg->constellation_out,
+            cfg->constellation_out != NULL ? cfg->constellation_out : "-",
             cfg->constellation_svg != NULL ? cfg->constellation_svg : "-",
             cfg->demap_out != NULL ? cfg->demap_out : "-",
             cfg->viterbi_out != NULL ? cfg->viterbi_out : "-",
             cfg->ts_out != NULL ? cfg->ts_out : "-",
             rbdvbt_fec_name(cfg->fec));
+
+    if (cfg->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        double demod_t1 = monotonic_seconds();
+        fprintf(stderr,
+                "[demod-time] pilot_scan=%.3fs symbols_fifo=%.3fs total=%.3fs\n",
+                demod_scan_t1 > demod_t0 ? demod_scan_t1 - demod_t0 : 0.0,
+                demod_t1 > demod_scan_t1 ? demod_t1 - demod_scan_t1 : 0.0,
+                demod_t1 > demod_t0 ? demod_t1 - demod_t0 : 0.0);
+    }
 
     rc = 0;
 
@@ -3737,7 +6707,8 @@ done:
     if (demap_out != NULL) {
         fclose(demap_out);
     }
-    free(viterbi_dibits);
+    free(viterbi_symbols);
+    free(viterbi_model_symbols);
     if (plan != NULL) {
         fftwf_destroy_plan(plan);
     }
@@ -4114,6 +7085,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     uint32_t symbol_len = 0;
     uint32_t sync_symbols;
     uint32_t start;
+    int used_live_sync_hint = 0;
     complexf_t corr;
     double score;
     double cfo_hz;
@@ -4124,6 +7096,13 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     rbdvbt_status_context_t status;
     char status_symbol_rate[16];
     int rc = -1;
+    double t_start = monotonic_seconds();
+    double t_read = t_start;
+    double t_resample = t_start;
+    double t_prep = t_start;
+    double t_aux = t_start;
+    double t_sync = t_start;
+    double t_demod = t_start;
 
     if (effective_cfg.guard_interval != RBDVBT_GI_AUTO) {
         gi_len = guard_samples(fft_size, effective_cfg.guard_interval);
@@ -4135,13 +7114,27 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         return -1;
     }
 
+    if (gui_constellation_start(effective_cfg.gui) != 0) {
+        return -1;
+    }
+    if (gui_fifo_start(effective_cfg.gui) != 0) {
+        return -1;
+    }
+
     if (read_probe_samples(&effective_cfg, &samples, &count, &stats) != 0) {
         return -1;
+    }
+    t_read = monotonic_seconds();
+    if (count == 0u) {
+        free(samples);
+        return RBDVBT_PROBE_EOF;
     }
 
     init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
     rbdvbt_status_publish_idle(&status, "processing", (uint64_t)count);
-    rbdvbt_iq_stats_print(stderr, &stats);
+    if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+        rbdvbt_iq_stats_print(stderr, &stats);
+    }
     remove_dc(samples, count);
 
     if (effective_cfg.resample_x4) {
@@ -4161,12 +7154,14 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         count = resampled_count;
         effective_cfg.sample_rate_hz *= 4u;
 
-        fprintf(stderr,
-                "[resample] x4 sinc input_rate=%u output_rate=%u input_samples=%zu output_samples=%zu\n",
-                cfg->sample_rate_hz,
-                effective_cfg.sample_rate_hz,
-                stats.samples,
-                count);
+        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+            fprintf(stderr,
+                    "[resample] x4 sinc input_rate=%u output_rate=%u input_samples=%zu output_samples=%zu\n",
+                    cfg->sample_rate_hz,
+                    effective_cfg.sample_rate_hz,
+                    stats.samples,
+                    count);
+        }
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
         rbdvbt_status_publish_idle(&status, "resample", (uint64_t)stats.samples);
     }
@@ -4184,7 +7179,17 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         }
 
         target_rate_hz = (uint32_t)lrint(target_rate);
-        if (resample_sinc_ratio(samples, count, ratio, &resampled, &resampled_count) != 0) {
+        if (effective_cfg.live_mode) {
+            if (resample_sinc_ratio_live(samples,
+                                         count,
+                                         ratio,
+                                         effective_cfg.sample_rate_hz,
+                                         target_rate_hz,
+                                         &resampled,
+                                         &resampled_count) != 0) {
+                goto done;
+            }
+        } else if (resample_sinc_ratio(samples, count, ratio, &resampled, &resampled_count) != 0) {
             goto done;
         }
 
@@ -4193,17 +7198,20 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         count = resampled_count;
         effective_cfg.sample_rate_hz = target_rate_hz;
 
-        fprintf(stderr,
-                "[resample] dvbt-rate sinc input_rate=%u output_rate=%u ratio=%.9f ir=%u input_samples=%zu output_samples=%zu\n",
-                cfg->sample_rate_hz,
-                effective_cfg.sample_rate_hz,
-                ratio,
-                effective_cfg.dvbt_ir,
-                stats.samples,
-                count);
+        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+            fprintf(stderr,
+                    "[resample] dvbt-rate sinc input_rate=%u output_rate=%u ratio=%.9f ir=%u input_samples=%zu output_samples=%zu\n",
+                    cfg->sample_rate_hz,
+                    effective_cfg.sample_rate_hz,
+                    ratio,
+                    effective_cfg.dvbt_ir,
+                    stats.samples,
+                    count);
+        }
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
         rbdvbt_status_publish_idle(&status, "resample", (uint64_t)stats.samples);
     }
+    t_resample = monotonic_seconds();
 
     if (effective_cfg.guard_interval == RBDVBT_GI_AUTO) {
         effective_cfg.guard_interval = select_guard_interval_auto(&effective_cfg, samples, count, fft_size);
@@ -4221,10 +7229,16 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         goto done;
     }
 
-    if (count < (size_t)symbol_len * 4u) {
-        fprintf(stderr, "[probe] not enough samples for OFDM acquisition\n");
+    if (live_ofdm_prepend_tail(&effective_cfg, &samples, &count, symbol_len) != 0) {
         goto done;
     }
+
+    if (count < (size_t)symbol_len * 4u) {
+        fprintf(stderr, "[probe] not enough samples for OFDM acquisition\n");
+        rc = RBDVBT_PROBE_EOF;
+        goto done;
+    }
+    t_prep = monotonic_seconds();
 
     if (write_highres_spectrum(&effective_cfg,
                                samples,
@@ -4239,6 +7253,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     if (write_acquisition_scan(&effective_cfg, samples, count) != 0) {
         goto done;
     }
+    t_aux = monotonic_seconds();
 
     sync_symbols = effective_cfg.probe_symbols;
     if ((size_t)sync_symbols * symbol_len > count) {
@@ -4248,38 +7263,95 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         sync_symbols = 200u;
     }
 
-    start = find_symbol_start(samples,
-                              count,
-                              fft_size,
-                              gi_len,
-                              symbol_len,
-                              sync_symbols,
-                              &score,
-                              &corr);
+    live_symbol_continuity_ok = 0;
 
-    if (write_cp_timing(&effective_cfg,
-                        samples,
-                        count,
-                        fft_size,
-                        gi_len,
-                        symbol_len,
-                        sync_symbols,
-                        &start,
-                        &score,
-                        &corr) != 0) {
-        goto done;
+    if (effective_cfg.live_mode &&
+        live_frontend_cursor.valid &&
+        live_frontend_cursor.sample_rate_hz == effective_cfg.sample_rate_hz &&
+        live_frontend_cursor.symbol_len == symbol_len) {
+        uint64_t range_start = live_resampled_chunk_start_abs;
+        uint64_t range_end = live_resampled_chunk_start_abs + live_resampled_chunk_count;
+        uint64_t expected_abs = live_frontend_cursor.next_symbol_sample_abs;
+        uint64_t selected_abs = expected_abs;
+        uint64_t symbol_need = (uint64_t)gi_len + (uint64_t)fft_size;
+
+        while (selected_abs < range_start) {
+            selected_abs += (uint64_t)symbol_len;
+        }
+        if (live_ofdm_prefix_count >= (size_t)symbol_len &&
+            selected_abs >= range_start + (uint64_t)symbol_len) {
+            selected_abs -= (uint64_t)symbol_len;
+        }
+
+        if (selected_abs >= range_start &&
+            selected_abs + symbol_need <= range_end &&
+            selected_abs - range_start <= (uint64_t)UINT32_MAX) {
+            uint32_t predicted_local = (uint32_t)(selected_abs - range_start);
+            int64_t predicted_symbol_delta;
+            predicted_symbol_delta = ((int64_t)selected_abs - (int64_t)expected_abs) / (int64_t)symbol_len;
+            start = find_symbol_start_near_local_grdvbt_ml(samples,
+                                                           count,
+                                                           fft_size,
+                                                           gi_len,
+                                                           symbol_len,
+                                                           sync_symbols,
+                                                           predicted_local,
+                                                           LIVE_GRDVBT_TRACK_RADIUS,
+                                                           &score,
+                                                           &corr);
+            used_live_sync_hint = 1;
+            live_symbol_continuity_ok = 1;
+            if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+                fprintf(stderr,
+                        "[sync] grdvbt-track expected_abs=%llu selected_abs=%llu predicted_local=%u local=%u symbol_delta=%lld radius=%u score=%.4f\n",
+                        (unsigned long long)expected_abs,
+                        (unsigned long long)selected_abs,
+                        predicted_local,
+                        start,
+                        (long long)predicted_symbol_delta,
+                        LIVE_GRDVBT_TRACK_RADIUS,
+                        score);
+            }
+        }
+    }
+
+    if (!used_live_sync_hint) {
+        start = find_symbol_start_grdvbt_ml(samples,
+                                            count,
+                                            fft_size,
+                                            gi_len,
+                                            symbol_len,
+                                            sync_symbols,
+                                            &score,
+                                            &corr);
+
+        if (write_cp_timing(&effective_cfg,
+                            samples,
+                            count,
+                            fft_size,
+                            gi_len,
+                            symbol_len,
+                            sync_symbols,
+                            &start,
+                            &score,
+                            &corr) != 0) {
+                goto done;
+        }
     }
 
     cfo_hz = -atan2(corr.im, corr.re) * (double)effective_cfg.sample_rate_hz /
              (2.0 * M_PI * (double)fft_size);
 
     fprintf(stderr,
-            "[sync] start=%u score=%.4f corr_phase=%.4f cfo=%.2fHz sync_symbols=%u\n",
+            "[sync] start=%u score=%.4f corr_phase=%.4f cfo=%.2fHz sync_symbols=%u mode=%s\n",
             start,
             score,
             atan2(corr.im, corr.re),
             cfo_hz,
-            sync_symbols);
+            sync_symbols,
+            used_live_sync_hint ? "track" : "acquire");
+    live_frontend_sync_mode = used_live_sync_hint ? "track" : "acquire";
+    t_sync = monotonic_seconds();
 
     if (effective_cfg.fine_timing_out != NULL || effective_cfg.fine_timing_svg != NULL) {
         uint32_t fine_start = start;
@@ -4311,12 +7383,14 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                                 &corr);
             cfo_hz = -atan2(corr.im, corr.re) * (double)effective_cfg.sample_rate_hz /
                      (2.0 * M_PI * (double)fft_size);
-            fprintf(stderr,
-                    "[sync] fine-selected start=%u cp_score=%.4f cfo=%.2fHz fine_metric=%.6f\n",
-                    start,
-                    score,
-                    cfo_hz,
-                    fine_metric);
+            if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+                fprintf(stderr,
+                        "[sync] fine-selected start=%u cp_score=%.4f cfo=%.2fHz fine_metric=%.6f\n",
+                        start,
+                        score,
+                        cfo_hz,
+                        fine_metric);
+            }
         }
     }
 
@@ -4345,6 +7419,35 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     } else {
         rbdvbt_status_publish_idle(&status, "demod", (uint64_t)stats.samples);
         rc = write_constellation(&effective_cfg, samples, count, start, fft_size, gi_len, symbol_len, cfo_hz);
+    }
+    t_demod = monotonic_seconds();
+
+    if (effective_cfg.live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        fprintf(stderr,
+                "[frontend-time] read=%.3fs resample=%.3fs prep=%.3fs aux=%.3fs sync=%.3fs demod_fifo=%.3fs total=%.3fs samples=%zu\n",
+                t_read - t_start,
+                t_resample - t_read,
+                t_prep - t_resample,
+                t_aux - t_prep,
+                t_sync - t_aux,
+                t_demod - t_sync,
+                t_demod - t_start,
+                count);
+    }
+
+    if (effective_cfg.live_mode && rc == 0) {
+        live_sync_hint.valid = 1;
+        live_sync_hint.sample_rate_hz = effective_cfg.sample_rate_hz;
+        live_sync_hint.symbol_rate = effective_cfg.symbol_rate;
+        live_sync_hint.guard_interval = effective_cfg.guard_interval;
+        live_sync_hint.fft_size = fft_size;
+        live_sync_hint.symbol_len = symbol_len;
+        live_sync_hint.chunk_output_samples = (uint32_t)(count % UINT32_MAX);
+        live_sync_hint.start = start;
+        live_sync_hint.cfo_hz = cfo_hz;
+        live_sync_hint.cp_score = score;
+    } else if (effective_cfg.live_mode && rc != RBDVBT_PROBE_EOF) {
+        live_sync_hint.valid = 0;
     }
 
 done:

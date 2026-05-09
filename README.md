@@ -121,6 +121,41 @@ Status bekijken in een tweede terminal:
 ./build/rbdvbt_status_watch /tmp/rx_status.json
 ```
 
+## Live Ontvangst
+
+Gebruik `--live` voor een doorlopende IQ-stream van een SDR-frontend. In deze
+modus verwerkt de ontvanger stdin in opeenvolgende OFDM-chunks, houdt een
+kleine FIFO tussen frontend en inner/outer decoder bij, en probeert na een
+frontend-discontinuity of zwakke chunk opnieuw te locken zonder het proces te
+stoppen. MPEG-TS blijft schoon op `stdout` wanneer `--stdout-ts` of
+`--ts-out -` wordt gebruikt; alle timing-, FIFO- en lockinformatie gaat naar
+`stderr`.
+
+Een live run die is getest met een Linrad/SDR stream op `1010526 Hz` sample
+rate:
+
+```sh
+./build/rbdvbt_rx \
+  --probe-constellation \
+  --resample-to-dvbt-rate \
+  --dvbt-ir 1 \
+  --stdin \
+  --input-format s16 \
+  --sample-rate 1010526 \
+  --sr 250k \
+  --gi 1/32 \
+  --fec 2/3 \
+  --live \
+  --live-symbols 64 \
+  --gui \
+  --ts-out - | ffplay -
+```
+
+Met deze live sample-rate stream is `250k`, FEC `2/3`, GI `1/32` getest met
+stabiele pilot-lock, `rs_uncorr=0`, `cc=0` en geen FIFO-drops. Na de 64-state
+Viterbi optimalisatie ligt de Viterbi-tijd voor 64-symbol chunks typisch rond
+`0.125-0.127 s` op deze testopstelling.
+
 ## Parameters
 
 ### Invoer
@@ -137,7 +172,7 @@ Status bekijken in een tweede terminal:
 
 | Parameter | Keuzes | Betekenis |
 |---|---|---|
-| `--sr` | `125k`, `250k`, `333k`, `500k` | DVB-T symbolrate preset. |
+| `--sr` | `125k`, `250k`, `333k`, `500k`, of `125000`, `250000`, `333000`, `333333`, `500000` | DVB-T symbolrate preset of numerieke Hz-waarde. `333000` en `333333` kiezen de 333k mode. |
 | `--gi` | `auto`, `1/8`, `1/16`, `1/32` | Guard interval. `auto` kiest via cyclic-prefix correlatie. |
 | `--fec` | `auto`, `1/2`, `2/3`, `3/4`, `5/6`, `7/8` | Inner FEC puncturing rate. `auto` kiest via Viterbi + outer TS score. |
 | `--dvbt-ir` | `1`, `2`, `4`, `8` | Interpolation/rate factor voor de DVB-T sample grid. |
@@ -149,12 +184,17 @@ Status bekijken in een tweede terminal:
 |---|---|
 | `--stdout-ts` | Schrijf MPEG-TS naar `stdout`. Equivalent aan `--ts-out -`. |
 | `--ts-out FILE` | Schrijf MPEG-TS naar bestand. Gebruik `-` voor `stdout`. |
+| `--live` | Blijf stdin in opeenvolgende decode-chunks verwerken; bij zwakke chunks wordt opnieuw geacquireerd zonder het proces te stoppen. Stdout blijft uitsluitend MPEG-TS. |
+| `--live-symbols N` | Aantal OFDM-symbolen per live frontend chunk. `64` is de geteste standaard voor de huidige Linrad/SDR live pipeline. |
+| `--gui` | Toon live constellatie- en FIFO-vensters wanneer X11 beschikbaar is. |
+| `--wait-video-start` | Houd TS-output dicht tot PAT/PMT/video-PID bekend zijn en daarna een schoon video-startpunt langskomt. H.264 gebruikt SPS/PPS + IDR; H.265/HEVC gebruikt VPS/SPS/PPS + IDR/CRA. |
 | `--constellation-out FILE.csv` | Schrijf QPSK constellatiepunten. |
 | `--constellation-svg FILE.svg` | Schrijf QPSK constellatie als SVG. |
 | `--demap-out FILE.csv` | Schrijf gedemapte dibits. |
 | `--viterbi-out FILE.bin` | Schrijf bytes na inner Viterbi decoder. |
 | `--status-json FILE.json` | Schrijf periodiek receiverstatus als JSON. |
 | `--status-period-packets N` | Statusupdate elke `N` TS packets; tijdens input elke `N * 4096` IQ samples. |
+| `--loglevel LEVEL` | Logdetail: `error`, `warn`, `info`, `debug` of `trace`. Default is `info`; gebruik `debug` voor uitgebreide DSP/FIFO-analyse. |
 
 ## Parameterkeuze
 
