@@ -422,6 +422,13 @@ Deze grafiek gebruikt dezelfde symbolrates en FECs, maar met guard `1/8`. Door
 de guard-overhead schuiven de curves ongeveer `0.38 dB` ongunstiger dan bij
 `1/32`, tenzij de langere guard in de praktijk echo-delay problemen oplost.
 
+## Dankwoord
+
+Dank aan de projecten [gr-dvbt](https://github.com/BogdanDIA/gr-dvbt) en
+[leansdr](https://github.com/pabr/leansdr). Hun implementaties en documentatie
+waren een belangrijke inspiratiebron bij het uitwerken en testen van deze
+reduced-bandwidth DVB-T ontvanger.
+
 ## Licentie
 
 Deze software mag worden gebruikt, aangepast en verspreid, ook in afgeleide
