@@ -1,6 +1,0 @@
-/home/rhardenb/repos/dvbt-rx/build/CMakeFiles/rbdvbt_rx.dir
-/home/rhardenb/repos/dvbt-rx/build/CMakeFiles/portsdown_iq_dump.dir
-/home/rhardenb/repos/dvbt-rx/build/CMakeFiles/rbdvbt_status_watch.dir
-/home/rhardenb/repos/dvbt-rx/build/CMakeFiles/dvbt_fec_snr_plot.dir
-/home/rhardenb/repos/dvbt-rx/build/CMakeFiles/edit_cache.dir
-/home/rhardenb/repos/dvbt-rx/build/CMakeFiles/rebuild_cache.dir

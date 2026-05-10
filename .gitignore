@@ -1,3 +1,7 @@
 other_parties/
 recordings/
 docs/
+/build/
+/build-*/
+/dist/
+*.zip
