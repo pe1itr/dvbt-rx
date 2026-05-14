@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef RBDVBT_VERSION
-#define RBDVBT_VERSION "0.1.0"
+#define RBDVBT_VERSION "0.1.1"
 #endif
 
 typedef enum {

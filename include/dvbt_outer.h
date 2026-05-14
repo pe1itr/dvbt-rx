@@ -50,7 +50,12 @@ void rbdvbt_live_health_note_outer(uint32_t packets,
                                    uint32_t sync_bad,
                                    uint32_t transport_errors,
                                    uint32_t cc_errors,
-                                   uint32_t rs_uncorrectable);
+                                   uint32_t rs_bad,
+                                   uint32_t rs_corrected,
+                                   uint32_t rs_uncorrectable,
+                                   uint32_t written_packets,
+                                   size_t outer_acquire_pending,
+                                   const char *outer_state);
 
 int rbdvbt_outer_analyze_inner(const uint8_t *inner,
                                size_t inner_count,

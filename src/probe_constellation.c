@@ -75,6 +75,7 @@ static live_ofdm_buffer_state_t live_ofdm_buffer_state;
 typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t not_empty;
+    pthread_cond_t not_full;
     pthread_t thread;
     int started;
     int eof;
@@ -88,6 +89,7 @@ typedef struct {
 
 static live_iq_ring_t live_iq_ring = {
     PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_COND_INITIALIZER,
     PTHREAD_COND_INITIALIZER,
     0,
     0,
@@ -1443,35 +1445,34 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
 
 static void live_iq_ring_push(const rbdvbt_complex_t *samples, size_t count)
 {
-    size_t n;
-
     pthread_mutex_lock(&live_iq_ring.mutex);
     if (live_iq_ring.items == NULL || live_iq_ring.cap == 0u) {
         pthread_mutex_unlock(&live_iq_ring.mutex);
         return;
     }
 
-    if (count > live_iq_ring.cap) {
-        samples += count - live_iq_ring.cap;
-        live_iq_ring.overrun_samples += count - live_iq_ring.cap;
-        count = live_iq_ring.cap;
-    }
-    if (live_iq_ring.count + count > live_iq_ring.cap) {
-        size_t drop = live_iq_ring.count + count - live_iq_ring.cap;
+    while (count > 0u) {
+        size_t free_count;
+        size_t write_count;
+        size_t n;
 
-        live_iq_ring.head = (live_iq_ring.head + drop) % live_iq_ring.cap;
-        live_iq_ring.count -= drop;
-        live_iq_ring.overrun_samples += drop;
-    }
+        while (live_iq_ring.count >= live_iq_ring.cap) {
+            pthread_cond_wait(&live_iq_ring.not_full, &live_iq_ring.mutex);
+        }
 
-    for (n = 0; n < count; ++n) {
-        size_t pos = (live_iq_ring.head + live_iq_ring.count) % live_iq_ring.cap;
+        free_count = live_iq_ring.cap - live_iq_ring.count;
+        write_count = count < free_count ? count : free_count;
+        for (n = 0; n < write_count; ++n) {
+            size_t pos = (live_iq_ring.head + live_iq_ring.count) % live_iq_ring.cap;
 
-        live_iq_ring.items[pos].re = samples[n].i;
-        live_iq_ring.items[pos].im = samples[n].q;
-        live_iq_ring.count++;
+            live_iq_ring.items[pos].re = samples[n].i;
+            live_iq_ring.items[pos].im = samples[n].q;
+            live_iq_ring.count++;
+        }
+        samples += write_count;
+        count -= write_count;
+        pthread_cond_broadcast(&live_iq_ring.not_empty);
     }
-    pthread_cond_broadcast(&live_iq_ring.not_empty);
     pthread_mutex_unlock(&live_iq_ring.mutex);
 }
 
@@ -1562,6 +1563,7 @@ static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_
             live_iq_ring.head = (live_iq_ring.head + 1u) % live_iq_ring.cap;
             live_iq_ring.count--;
         }
+        pthread_cond_broadcast(&live_iq_ring.not_full);
     }
     if (overrun_delta != NULL) {
         *overrun_delta = live_iq_ring.overrun_samples - overrun_before;
@@ -4418,7 +4420,12 @@ typedef struct {
     uint32_t sync_bad;
     uint32_t transport_errors;
     uint32_t cc_errors;
+    uint32_t rs_bad;
+    uint32_t rs_corrected;
     uint32_t rs_uncorrectable;
+    uint32_t written_packets;
+    size_t outer_acquire_pending;
+    char outer_state[24];
 } live_health_t;
 
 static pthread_mutex_t live_health_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -4433,6 +4440,7 @@ static void live_health_reset_locked(double now)
     live_health.t0 = now;
     live_health.lock_min = 1.0e9;
     live_health.snr_min = 1.0e9;
+    strcpy(live_health.outer_state, "-");
 }
 
 static void live_health_maybe_emit_locked(double now)
@@ -4459,7 +4467,7 @@ static void live_health_maybe_emit_locked(double now)
         double snr_min = live_health.snr_min < 1.0e8 ? live_health.snr_min : 0.0;
 
         fprintf(stderr,
-                "[health] %.1fs chunks=%u lock_min=%.5f lock_avg=%.5f snr_min=%.2fdB snr_avg=%.2fdB cont_bad=%u max_delta=%llu max_phase_delta=%llu fifo_max=%u fifo_drops=%u fifo_drop_symbols=%u low_pilot=%u packets=%u rs_uncorr=%u cc=%u tei=%u sync_bad=%u\n",
+                "[health] %.1fs chunks=%u lock_min=%.5f lock_avg=%.5f snr_min=%.2fdB snr_avg=%.2fdB cont_bad=%u max_delta=%llu max_phase_delta=%llu fifo_max=%u fifo_drops=%u fifo_drop_symbols=%u low_pilot=%u packets=%u rs_uncorr=%u cc=%u tei=%u sync_bad=%u outer_acquire_pending=%zu outer_state=%s rs_bad=%u rs_corrected=%u rs_uncorrectable=%u written_packets=%u\n",
                 elapsed,
                 live_health.chunks,
                 lock_min,
@@ -4477,7 +4485,13 @@ static void live_health_maybe_emit_locked(double now)
                 live_health.rs_uncorrectable,
                 live_health.cc_errors,
                 live_health.transport_errors,
-                live_health.sync_bad);
+                live_health.sync_bad,
+                live_health.outer_acquire_pending,
+                live_health.outer_state,
+                live_health.rs_bad,
+                live_health.rs_corrected,
+                live_health.rs_uncorrectable,
+                live_health.written_packets);
     }
     live_health_reset_locked(now);
 }
@@ -4556,7 +4570,12 @@ void rbdvbt_live_health_note_outer(uint32_t packets,
                                    uint32_t sync_bad,
                                    uint32_t transport_errors,
                                    uint32_t cc_errors,
-                                   uint32_t rs_uncorrectable)
+                                   uint32_t rs_bad,
+                                   uint32_t rs_corrected,
+                                   uint32_t rs_uncorrectable,
+                                   uint32_t written_packets,
+                                   size_t outer_acquire_pending,
+                                   const char *outer_state)
 {
     double now = monotonic_seconds();
 
@@ -4568,7 +4587,17 @@ void rbdvbt_live_health_note_outer(uint32_t packets,
     live_health.sync_bad += sync_bad;
     live_health.transport_errors += transport_errors;
     live_health.cc_errors += cc_errors;
+    live_health.rs_bad += rs_bad;
+    live_health.rs_corrected += rs_corrected;
     live_health.rs_uncorrectable += rs_uncorrectable;
+    live_health.written_packets += written_packets;
+    live_health.outer_acquire_pending = outer_acquire_pending;
+    if (outer_state != NULL) {
+        snprintf(live_health.outer_state,
+                 sizeof(live_health.outer_state),
+                 "%s",
+                 outer_state);
+    }
     live_health_maybe_emit_locked(now);
     pthread_mutex_unlock(&live_health_mutex);
 }
@@ -4685,28 +4714,6 @@ static uint32_t live_decode_invalidate_queued(const char *reason)
     return processing_symbols;
 }
 
-static void live_decode_wait_idle(const char *reason)
-{
-    double t0 = monotonic_seconds();
-    uint32_t processing_symbols;
-
-    pthread_mutex_lock(&live_decode_mutex);
-    while (live_decode_processing_symbols > 0u) {
-        pthread_cond_wait(&live_decode_space_cond, &live_decode_mutex);
-    }
-    processing_symbols = live_decode_processing_symbols;
-    pthread_mutex_unlock(&live_decode_mutex);
-
-    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        double t1 = monotonic_seconds();
-        fprintf(stderr,
-                "[fifo1] idle epoch=%llu reason=%s processing_symbols=%u wait=%.3fs\n",
-                (unsigned long long)live_decode_epoch,
-                reason != NULL ? reason : "-",
-                processing_symbols,
-                t1 - t0);
-    }
-}
 #define LIVE_METADATA_PILOT_LOCK_MIN 0.45
 #define LIVE_METADATA_PILOT_LOCK_STRONG 0.55
 #define LIVE_METADATA_SEARCH_RADIUS 96u
@@ -5919,24 +5926,33 @@ static int live_decode_enqueue(rbdvbt_fec_t fec,
     job->status.symbol_rate = job->symbol_rate;
 
     pthread_mutex_lock(&live_decode_mutex);
+    if (symbol_count > LIVE_DECODE_MAX_QUEUED_SYMBOLS) {
+        live_decode_gap_pending = 1;
+        pthread_mutex_unlock(&live_decode_mutex);
+        live_decode_free_job(job);
+        fprintf(stderr,
+                "[fifo1] incoming job too large symbols=%u capacity_symbols=%u\n",
+                symbol_count,
+                LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+        return -1;
+    }
     if (!live_decode_stop &&
         live_decode_queued_symbols + symbol_count > LIVE_DECODE_MAX_QUEUED_SYMBOLS) {
         live_decode_gap_pending = 1;
         gui_fifo_submit(live_decode_queued_symbols,
                         live_decode_processing_symbols,
                         LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+        live_health_note_fifo(live_decode_queued_symbols,
+                              live_decode_processing_symbols,
+                              symbol_count);
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
             fprintf(stderr,
-                    "[fifo1] backlog full dropping incoming_symbols=%u incoming_bits=%zu queued_symbols=%u processing_symbols=%u capacity_symbols=%u\n",
+                    "[fifo1] backlog full dropping incoming_symbols=%u queued_symbols=%u processing_symbols=%u capacity_symbols=%u\n",
                     symbol_count,
-                    symbol_cell_count * 2u,
                     live_decode_queued_symbols,
                     live_decode_processing_symbols,
                     LIVE_DECODE_MAX_QUEUED_SYMBOLS);
         }
-        live_health_note_fifo(live_decode_queued_symbols,
-                              live_decode_processing_symbols,
-                              symbol_count);
         pthread_mutex_unlock(&live_decode_mutex);
         live_decode_free_job(job);
         return 0;
@@ -6456,8 +6472,8 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 conjugate_first = live_frontend_cursor.conjugate;
                 conjugate_last = conjugate_first;
             } else {
-                bin_first = -16;
-                bin_last = 16;
+                bin_first = -64;
+                bin_last = 64;
             }
         }
 
@@ -6882,15 +6898,10 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             }
         }
         if (!frontend_continuous) {
-            uint32_t processing_symbols;
-
             frame_symbol_seq_start = live_soft_next_symbol_seq;
             live_viterbi_stream_reset();
             live_viterbi_state.valid = 0;
-            processing_symbols = live_decode_invalidate_queued("frontend-discontinuity");
-            if (processing_symbols > 0u) {
-                live_decode_wait_idle("frontend-discontinuity");
-            }
+            (void)live_decode_invalidate_queued("frontend-discontinuity");
             rbdvbt_outer_reset_live_stream();
         }
         live_symbol_continuity_ok = frontend_continuous;
@@ -7011,9 +7022,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 live_soft_dibit_fifo.symbol_count = 0u;
                 live_viterbi_stream_reset();
                 live_viterbi_state.valid = 0;
-                if (live_decode_invalidate_queued("low-pilot") > 0u) {
-                    live_decode_wait_idle("low-pilot");
-                }
+                (void)live_decode_invalidate_queued("low-pilot");
                 rbdvbt_outer_reset_live_stream();
                 live_frontend_cursor.valid = 0;
                 rc = 0;

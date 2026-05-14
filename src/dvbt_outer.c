@@ -11,6 +11,24 @@
 #include <sys/time.h>
 #include <time.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+typedef SOCKET rbdvbt_socket_t;
+#define RBDVBT_INVALID_SOCKET INVALID_SOCKET
+#define rbdvbt_socket_close closesocket
+#else
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+typedef int rbdvbt_socket_t;
+#define RBDVBT_INVALID_SOCKET (-1)
+#define rbdvbt_socket_close close
+#endif
+
 #ifdef RBDVBT_HAVE_X11
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -33,7 +51,10 @@
 #define VIDEO_NAL_PPS 0x04u
 #define VIDEO_NAL_VPS 0x08u
 #define LIVE_GRDVBT_SOFT_FAIL_LIMIT 4u
+#define LIVE_GRDVBT_HARD_FAIL_LIMIT 2u
 #define LIVE_GRDVBT_HARD_FAIL_BLOCKS 32u
+#define LIVE_GRDVBT_LOW_PILOT_RESET_LIMIT 3u
+#define LIVE_GRDVBT_PILOT_LOCK_MIN 0.45
 
 typedef enum {
     RX_LOCK_SEARCH,
@@ -64,6 +85,18 @@ typedef struct {
     uint32_t sync_ok;
     uint32_t blocks;
 } outer_candidate_t;
+
+typedef struct {
+    uint32_t sync_scan_blocks;
+    uint32_t rs_probe_blocks;
+    size_t min_pending_bytes;
+    uint32_t min_rs_ok;
+    uint32_t min_sync_ok;
+    uint32_t min_sync_only_ok;
+    uint32_t soft_fail_limit;
+    uint32_t hard_fail_limit;
+    uint32_t low_pilot_reset_limit;
+} outer_scan_policy_t;
 
 typedef struct {
     int valid;
@@ -121,6 +154,9 @@ typedef struct {
     uint64_t rs_blocks;
     uint32_t lock_jobs;
     uint32_t fail_jobs;
+    uint32_t hard_fail_jobs;
+    uint32_t low_pilot_jobs;
+    int probation_lock;
 } live_grdvbt_outer_state_t;
 
 static live_grdvbt_outer_state_t live_grdvbt_outer;
@@ -207,6 +243,13 @@ static void live_outer_alignment_note_result(uint32_t rs_ok,
 }
 
 typedef struct {
+    FILE *file;
+    int is_udp;
+    rbdvbt_socket_t sock;
+    char label[128];
+} ts_output_sink_t;
+
+typedef struct {
     int stdout_enabled;
     int waiting_for_video_start;
     uint8_t pat[RS_DATA_LEN];
@@ -224,6 +267,7 @@ typedef struct {
 
 static ts_output_gate_t live_ts_gate;
 static int live_ts_gate_ready;
+static int live_ts_file_ready;
 
 #ifdef RBDVBT_HAVE_X11
 #define GUI_STATUS_X 530u
@@ -1061,15 +1105,110 @@ static int sync_matches(uint8_t sync, uint32_t block_phase)
     return sync == (block_phase == 0u ? 0xb8u : 0x47u);
 }
 
-static outer_candidate_t score_candidate(const uint8_t *deint,
-                                         size_t deint_count,
-                                         uint32_t deint_phase,
-                                         uint32_t rs_phase,
-                                         uint32_t block_phase)
+static outer_scan_policy_t outer_scan_policy_default(void)
+{
+    outer_scan_policy_t p;
+
+    p.sync_scan_blocks = 256u;
+    p.rs_probe_blocks = 16u;
+    p.min_pending_bytes = 0u;
+    p.min_rs_ok = 1u;
+    p.min_sync_ok = 0u;
+    p.min_sync_only_ok = 96u;
+    p.soft_fail_limit = LIVE_GRDVBT_SOFT_FAIL_LIMIT;
+    p.hard_fail_limit = LIVE_GRDVBT_HARD_FAIL_LIMIT;
+    p.low_pilot_reset_limit = LIVE_GRDVBT_LOW_PILOT_RESET_LIMIT;
+    return p;
+}
+
+static uint32_t status_symbol_rate_hz(const rbdvbt_status_context_t *status)
+{
+    if (status == NULL || status->symbol_rate == NULL) {
+        return 0u;
+    }
+    if (strstr(status->symbol_rate, "150") != NULL) {
+        return 150000u;
+    }
+    if (strstr(status->symbol_rate, "250") != NULL) {
+        return 250000u;
+    }
+    if (strstr(status->symbol_rate, "333") != NULL) {
+        return 333000u;
+    }
+    if (strstr(status->symbol_rate, "500") != NULL) {
+        return 500000u;
+    }
+    return 0u;
+}
+
+static outer_scan_policy_t outer_scan_policy_for_status(const rbdvbt_status_context_t *status)
+{
+    outer_scan_policy_t p = outer_scan_policy_default();
+    uint32_t sr_hz = status_symbol_rate_hz(status);
+    double observe_s = 0.0;
+
+    if (sr_hz == 0u) {
+        return p;
+    }
+
+    if (sr_hz <= 150000u) {
+        observe_s = 1.5;
+        p.rs_probe_blocks = 48u;
+        p.sync_scan_blocks = 192u;
+        p.min_rs_ok = 2u;
+        p.min_sync_ok = 24u;
+        p.min_sync_only_ok = 96u;
+        p.soft_fail_limit = 6u;
+        p.hard_fail_limit = 3u;
+        p.low_pilot_reset_limit = 4u;
+    } else if (sr_hz <= 250000u) {
+        observe_s = 1.1;
+        p.rs_probe_blocks = 64u;
+        p.sync_scan_blocks = 224u;
+        p.min_rs_ok = 2u;
+        p.min_sync_ok = 32u;
+        p.min_sync_only_ok = 96u;
+        p.soft_fail_limit = 5u;
+        p.hard_fail_limit = 3u;
+        p.low_pilot_reset_limit = 3u;
+    } else {
+        observe_s = 0.85;
+        p.rs_probe_blocks = 64u;
+        p.sync_scan_blocks = 256u;
+        p.min_rs_ok = 2u;
+        p.min_sync_ok = 32u;
+        p.min_sync_only_ok = 128u;
+        p.soft_fail_limit = 4u;
+        p.hard_fail_limit = 2u;
+        p.low_pilot_reset_limit = 3u;
+    }
+
+    /* QPSK 2K has 1512 data cells per OFDM symbol. With the reduced-bandwidth
+     * rate convention, inner bytes/s ~= SR * 1512 / 14784.
+     */
+    p.min_pending_bytes = (size_t)((double)sr_hz * (1512.0 / 14784.0) * observe_s);
+    if (p.min_pending_bytes < RS_BLOCK_LEN * 32u) {
+        p.min_pending_bytes = RS_BLOCK_LEN * 32u;
+    }
+    return p;
+}
+
+static outer_candidate_t score_candidate_with_policy(const uint8_t *deint,
+                                                     size_t deint_count,
+                                                     uint32_t deint_phase,
+                                                     uint32_t rs_phase,
+                                                     uint32_t block_phase,
+                                                     const outer_scan_policy_t *policy)
 {
     outer_candidate_t c;
     size_t offset = OUTER_TRANSIENT + rs_phase;
     uint32_t max_blocks = 0;
+    outer_scan_policy_t default_policy;
+
+    if (policy == NULL) {
+        default_policy = outer_scan_policy_default();
+        policy = &default_policy;
+    }
 
     memset(&c, 0, sizeof(c));
     c.deint_phase = deint_phase;
@@ -1081,8 +1220,8 @@ static outer_candidate_t score_candidate(const uint8_t *deint,
     }
 
     max_blocks = (uint32_t)((deint_count - offset) / RS_BLOCK_LEN);
-    if (max_blocks > 256u) {
-        max_blocks = 256u;
+    if (max_blocks > policy->sync_scan_blocks) {
+        max_blocks = policy->sync_scan_blocks;
     }
 
     for (uint32_t b = 0; b < max_blocks; ++b) {
@@ -1093,7 +1232,7 @@ static outer_candidate_t score_candidate(const uint8_t *deint,
         if (sync_matches(block[0], phase)) {
             c.sync_ok++;
         }
-        if (b >= 16u) {
+        if (b >= policy->rs_probe_blocks) {
             continue;
         }
         if (sync_matches(block[0], phase) && rs_block_is_clean_204(block)) {
@@ -1105,9 +1244,24 @@ static outer_candidate_t score_candidate(const uint8_t *deint,
     return c;
 }
 
-static int scan_outer_alignment(const uint8_t *inner,
-                                size_t inner_count,
-                                outer_candidate_t *best)
+static outer_candidate_t score_candidate(const uint8_t *deint,
+                                         size_t deint_count,
+                                         uint32_t deint_phase,
+                                         uint32_t rs_phase,
+                                         uint32_t block_phase)
+{
+    return score_candidate_with_policy(deint,
+                                       deint_count,
+                                       deint_phase,
+                                       rs_phase,
+                                       block_phase,
+                                       NULL);
+}
+
+static int scan_outer_alignment_with_policy(const uint8_t *inner,
+                                            size_t inner_count,
+                                            outer_candidate_t *best,
+                                            const outer_scan_policy_t *policy)
 {
     if (best == NULL) {
         return -1;
@@ -1124,11 +1278,12 @@ static int scan_outer_alignment(const uint8_t *inner,
 
         for (uint32_t rs_phase = 0; rs_phase < RS_BLOCK_LEN; ++rs_phase) {
             for (uint32_t block_phase = 0; block_phase < 8u; ++block_phase) {
-                outer_candidate_t c = score_candidate(deint,
-                                                      deint_count,
-                                                      deint_phase,
-                                                      rs_phase,
-                                                      block_phase);
+                outer_candidate_t c = score_candidate_with_policy(deint,
+                                                                  deint_count,
+                                                                  deint_phase,
+                                                                  rs_phase,
+                                                                  block_phase,
+                                                                  policy);
 
                 if (c.score > best->score) {
                     *best = c;
@@ -1140,6 +1295,35 @@ static int scan_outer_alignment(const uint8_t *inner,
     }
 
     return best->blocks != 0u ? 0 : -1;
+}
+
+static int scan_outer_alignment(const uint8_t *inner,
+                                size_t inner_count,
+                                outer_candidate_t *best)
+{
+    return scan_outer_alignment_with_policy(inner, inner_count, best, NULL);
+}
+
+static int outer_candidate_is_acquirable(const outer_candidate_t *best,
+                                         const outer_scan_policy_t *policy,
+                                         int *probation)
+{
+    if (probation != NULL) {
+        *probation = 0;
+    }
+    if (best == NULL || policy == NULL) {
+        return 0;
+    }
+    if (best->rs_ok >= policy->min_rs_ok && best->sync_ok >= policy->min_sync_ok) {
+        return 1;
+    }
+    if (best->sync_ok >= policy->min_sync_only_ok) {
+        if (probation != NULL) {
+            *probation = 1;
+        }
+        return 1;
+    }
+    return 0;
 }
 
 static outer_candidate_t live_outer_alignment_candidate(const uint8_t *deint,
@@ -1874,7 +2058,148 @@ static void ts_output_gate_relock(ts_output_gate_t *gate, int wait_video_start)
     gate->video_config_count = 0;
 }
 
-static int ts_output_gate_flush(ts_output_gate_t *gate, FILE *out, const char *ts_path)
+static int ts_output_is_udp_path(const char *ts_path)
+{
+    return ts_path != NULL && strncmp(ts_path, "udp://", 6u) == 0;
+}
+
+static int ts_output_parse_udp_path(const char *ts_path, char *host, size_t host_len, uint16_t *port)
+{
+    const char *spec;
+    const char *colon;
+    char *endp;
+    unsigned long parsed_port;
+    size_t len;
+
+    if (ts_path == NULL || host == NULL || host_len == 0u || port == NULL ||
+        !ts_output_is_udp_path(ts_path)) {
+        return -1;
+    }
+
+    spec = ts_path + 6u;
+    colon = strrchr(spec, ':');
+    if (colon == NULL || colon == spec || colon[1] == '\0') {
+        return -1;
+    }
+    len = (size_t)(colon - spec);
+    if (len >= host_len) {
+        return -1;
+    }
+    memcpy(host, spec, len);
+    host[len] = '\0';
+
+    parsed_port = strtoul(colon + 1u, &endp, 10);
+    if (*endp != '\0' || parsed_port == 0ul || parsed_port > 65535ul) {
+        return -1;
+    }
+    *port = (uint16_t)parsed_port;
+    return 0;
+}
+
+static int ts_output_sink_open_udp(ts_output_sink_t *sink, const char *ts_path)
+{
+    char host[96];
+    uint16_t port;
+    struct sockaddr_in addr;
+
+    if (ts_output_parse_udp_path(ts_path, host, sizeof(host), &port) != 0) {
+        fprintf(stderr, "invalid UDP TS output, expected udp://HOST:PORT: %s\n", ts_path);
+        return -1;
+    }
+
+#ifdef _WIN32
+    {
+        static int wsa_ready;
+        if (!wsa_ready) {
+            WSADATA wsa;
+            if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+                fprintf(stderr, "failed to initialize Winsock for UDP TS output\n");
+                return -1;
+            }
+            wsa_ready = 1;
+        }
+    }
+#endif
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        fprintf(stderr, "invalid UDP TS IPv4 address: %s\n", host);
+        return -1;
+    }
+
+    sink->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sink->sock == RBDVBT_INVALID_SOCKET) {
+        fprintf(stderr, "failed to create UDP TS socket: %s\n", ts_path);
+        return -1;
+    }
+    if (connect(sink->sock, (const struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        fprintf(stderr, "failed to connect UDP TS socket: %s\n", ts_path);
+        rbdvbt_socket_close(sink->sock);
+        sink->sock = RBDVBT_INVALID_SOCKET;
+        return -1;
+    }
+
+    sink->is_udp = 1;
+    snprintf(sink->label, sizeof(sink->label), "%s", ts_path);
+    return 0;
+}
+
+static int ts_output_sink_open(ts_output_sink_t *sink, const char *ts_path, int live_mode)
+{
+    memset(sink, 0, sizeof(*sink));
+    sink->sock = RBDVBT_INVALID_SOCKET;
+    snprintf(sink->label, sizeof(sink->label), "%s", ts_path != NULL ? ts_path : "-");
+
+    if (ts_output_is_udp_path(ts_path)) {
+        return ts_output_sink_open_udp(sink, ts_path);
+    }
+    if (strcmp(ts_path, "-") == 0) {
+        sink->file = stdout;
+        return 0;
+    }
+
+    sink->file = fopen(ts_path, live_mode && live_ts_file_ready ? "ab" : "wb");
+    if (sink->file != NULL && live_mode) {
+        live_ts_file_ready = 1;
+    }
+    return sink->file != NULL ? 0 : -1;
+}
+
+static int ts_output_sink_write(ts_output_sink_t *sink, const uint8_t *bytes, size_t byte_count)
+{
+    if (sink->is_udp) {
+        const char *p = (const char *)bytes;
+        while (byte_count > 0u) {
+            int chunk = byte_count > 1316u ? 1316 : (int)byte_count;
+            int sent = (int)send(sink->sock, p, chunk, 0);
+            if (sent != chunk) {
+                return -1;
+            }
+            p += sent;
+            byte_count -= (size_t)sent;
+        }
+        return 0;
+    }
+    return fwrite(bytes, 1, byte_count, sink->file) == byte_count ? 0 : -1;
+}
+
+static void ts_output_sink_close(ts_output_sink_t *sink)
+{
+    if (sink == NULL) {
+        return;
+    }
+    if (sink->is_udp && sink->sock != RBDVBT_INVALID_SOCKET) {
+        rbdvbt_socket_close(sink->sock);
+        sink->sock = RBDVBT_INVALID_SOCKET;
+    } else if (sink->file != NULL && sink->file != stdout) {
+        fclose(sink->file);
+    }
+    sink->file = NULL;
+}
+
+static int ts_output_gate_flush(ts_output_gate_t *gate, ts_output_sink_t *sink, const char *ts_path)
 {
     size_t bytes;
 
@@ -1883,7 +2208,7 @@ static int ts_output_gate_flush(ts_output_gate_t *gate, FILE *out, const char *t
     }
 
     bytes = (size_t)gate->write_buf_packets * RS_DATA_LEN;
-    if (fwrite(gate->write_buf, 1, bytes, out) != bytes) {
+    if (ts_output_sink_write(sink, gate->write_buf, bytes) != 0) {
         fprintf(stderr, "failed to write TS output: %s\n", ts_path);
         return -1;
     }
@@ -1892,7 +2217,7 @@ static int ts_output_gate_flush(ts_output_gate_t *gate, FILE *out, const char *t
 }
 
 static int ts_output_gate_write_packet(ts_output_gate_t *gate,
-                                       FILE *out,
+                                       ts_output_sink_t *sink,
                                        const char *ts_path,
                                        const uint8_t *packet)
 {
@@ -1901,7 +2226,7 @@ static int ts_output_gate_write_packet(ts_output_gate_t *gate,
            RS_DATA_LEN);
     gate->write_buf_packets++;
     if (gate->write_buf_packets == TS_WRITE_BURST_PACKETS) {
-        return ts_output_gate_flush(gate, out, ts_path);
+        return ts_output_gate_flush(gate, sink, ts_path);
     }
     return 0;
 }
@@ -1937,7 +2262,7 @@ static void ts_output_gate_note_video(ts_output_gate_t *gate,
 
 static int ts_output_gate_try_write(ts_output_gate_t *gate,
                                     const ts_validator_t *v,
-                                    FILE *out,
+                                    ts_output_sink_t *sink,
                                     const char *ts_path,
                                     const uint8_t *packet,
                                     int pilot_lock_ok,
@@ -1987,19 +2312,19 @@ static int ts_output_gate_try_write(ts_output_gate_t *gate,
         }
         gate->stdout_enabled = 1;
         if (gate->have_pat) {
-            if (ts_output_gate_write_packet(gate, out, ts_path, gate->pat) != 0) {
+            if (ts_output_gate_write_packet(gate, sink, ts_path, gate->pat) != 0) {
                 return -1;
             }
             (*written_packets)++;
         }
         if (gate->have_pmt) {
-            if (ts_output_gate_write_packet(gate, out, ts_path, gate->pmt) != 0) {
+            if (ts_output_gate_write_packet(gate, sink, ts_path, gate->pmt) != 0) {
                 return -1;
             }
             (*written_packets)++;
         }
         for (uint32_t i = 0; i < gate->video_config_count; ++i) {
-            if (ts_output_gate_write_packet(gate, out, ts_path, gate->video_config[i]) != 0) {
+            if (ts_output_gate_write_packet(gate, sink, ts_path, gate->video_config[i]) != 0) {
                 return -1;
             }
             (*written_packets)++;
@@ -2009,7 +2334,7 @@ static int ts_output_gate_try_write(ts_output_gate_t *gate,
     if (psi_packet && gate->stdout_enabled) {
         return 0;
     }
-    if (ts_output_gate_write_packet(gate, out, ts_path, packet) != 0) {
+    if (ts_output_gate_write_packet(gate, sink, ts_path, packet) != 0) {
         return -1;
     }
     (*written_packets)++;
@@ -2019,7 +2344,7 @@ static int ts_output_gate_try_write(ts_output_gate_t *gate,
 static int block4_consume_fifo3_packet(const rbdvbt_ts_packet_t *item,
                                        ts_output_gate_t *gate,
                                        ts_validator_t *validator,
-                                       FILE *out,
+                                       ts_output_sink_t *sink,
                                        const char *ts_path,
                                        int live_mode,
                                        int pilot_lock_ok,
@@ -2055,7 +2380,7 @@ static int block4_consume_fifo3_packet(const rbdvbt_ts_packet_t *item,
 
     if (ts_output_gate_try_write(gate,
                                  validator,
-                                 out,
+                                 sink,
                                  ts_path,
                                  item->bytes,
                                  pilot_lock_ok,
@@ -2348,7 +2673,7 @@ static int live_grdvbt_outer_push_deint_byte(uint8_t deint_byte,
                                              rbdvbt_fifo_t *fifo3,
                                              ts_output_gate_t *gate,
                                              ts_validator_t *validator,
-                                             FILE *out,
+                                             ts_output_sink_t *sink,
                                              const char *ts_path,
                                              const rbdvbt_status_context_t *status,
                                              uint32_t *written,
@@ -2370,7 +2695,9 @@ static int live_grdvbt_outer_push_deint_byte(uint8_t deint_byte,
         uint8_t corrected[RS_BLOCK_LEN];
         uint8_t ts[RS_DATA_LEN];
         int correction_result;
-        int pilot_lock_ok = status == NULL || !isfinite(status->pilot_lock) || status->pilot_lock >= 0.55;
+        int pilot_lock_ok = status == NULL ||
+            !isfinite(status->pilot_lock) ||
+            status->pilot_lock >= LIVE_GRDVBT_PILOT_LOCK_MIN;
         rbdvbt_ts_packet_t fifo3_item;
         int fifo_rc;
 
@@ -2422,7 +2749,7 @@ static int live_grdvbt_outer_push_deint_byte(uint8_t deint_byte,
             if (block4_consume_fifo3_packet(&fifo3_item,
                                             gate,
                                             validator,
-                                            out,
+                                            sink,
                                             ts_path,
                                             1,
                                             pilot_lock_ok,
@@ -2475,7 +2802,7 @@ static int live_grdvbt_outer_process_bytes(const uint8_t *inner,
                                            rbdvbt_fifo_t *fifo3,
                                            ts_output_gate_t *gate,
                                            ts_validator_t *validator,
-                                           FILE *out,
+                                           ts_output_sink_t *sink,
                                            const char *ts_path,
                                            const rbdvbt_status_context_t *status,
                                            uint32_t *written,
@@ -2504,7 +2831,7 @@ static int live_grdvbt_outer_process_bytes(const uint8_t *inner,
                                               fifo3,
                                               gate,
                                               validator,
-                                              out,
+                                              sink,
                                               ts_path,
                                               status,
                                               written,
@@ -2528,7 +2855,7 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
                                      rbdvbt_fifo_t *fifo3,
                                      ts_output_gate_t *gate,
                                      ts_validator_t *validator,
-                                     FILE *out,
+                                     ts_output_sink_t *sink,
                                      const char *ts_path,
                                      const rbdvbt_status_context_t *status,
                                      uint32_t *written,
@@ -2545,19 +2872,38 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
 
     if (!live_grdvbt_outer.valid) {
         outer_candidate_t best;
+        outer_scan_policy_t policy = outer_scan_policy_for_status(status);
+        int probation_lock = 0;
 
         if (live_grdvbt_outer_append_pending(inner, inner_count) != 0) {
             fprintf(stderr, "[outer] failed to append live gr-dvbt pending bytes\n");
             return -1;
         }
-        if (scan_outer_alignment(live_grdvbt_outer.pending,
-                                 live_grdvbt_outer.pending_count,
-                                 &best) != 0 ||
-            best.rs_ok == 0u) {
+        if (live_grdvbt_outer.pending_count < policy.min_pending_bytes) {
+            if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
+                fprintf(stderr,
+                        "[outer-state] grdvbt acquire accumulating pending=%zu need=%zu sr=%s\n",
+                        live_grdvbt_outer.pending_count,
+                        policy.min_pending_bytes,
+                        status != NULL && status->symbol_rate != NULL ? status->symbol_rate : "unknown");
+            }
+            return 0;
+        }
+        if (scan_outer_alignment_with_policy(live_grdvbt_outer.pending,
+                                             live_grdvbt_outer.pending_count,
+                                             &best,
+                                             &policy) != 0 ||
+            !outer_candidate_is_acquirable(&best, &policy, &probation_lock)) {
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                 fprintf(stderr,
-                        "[outer-state] grdvbt acquire pending=%zu failed\n",
-                        live_grdvbt_outer.pending_count);
+                        "[outer-state] grdvbt acquire pending=%zu failed rs_ok=%u/%u sync_ok=%u/%u sync_only=%u sr=%s\n",
+                        live_grdvbt_outer.pending_count,
+                        best.rs_ok,
+                        policy.min_rs_ok,
+                        best.sync_ok,
+                        policy.min_sync_ok,
+                        policy.min_sync_only_ok,
+                        status != NULL && status->symbol_rate != NULL ? status->symbol_rate : "unknown");
             }
             return 0;
         }
@@ -2581,17 +2927,19 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
         live_grdvbt_outer.branch = 0u;
         live_grdvbt_outer.block_phase = best.block_phase;
         live_grdvbt_outer.lock_jobs++;
+        live_grdvbt_outer.probation_lock = probation_lock;
         start = best.deint_phase;
         drop_deint = OUTER_TRANSIENT + best.rs_phase;
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
             fprintf(stderr,
-                    "[outer-state] acquired grdvbt_stream deint_phase=%u rs_phase=%u block_phase=%u drop_deint=%zu rs_probe_ok=%u sync_ok=%u\n",
+                    "[outer-state] acquired grdvbt_stream deint_phase=%u rs_phase=%u block_phase=%u drop_deint=%zu rs_probe_ok=%u sync_ok=%u probation=%d\n",
                     best.deint_phase,
                     best.rs_phase,
                     best.block_phase,
                     drop_deint,
                     best.rs_ok,
-                    best.sync_ok);
+                    best.sync_ok,
+                    probation_lock);
         }
         if (live_grdvbt_outer_process_bytes(live_grdvbt_outer.pending,
                                             live_grdvbt_outer.pending_count,
@@ -2601,7 +2949,7 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
                                             fifo3,
                                             gate,
                                             validator,
-                                            out,
+                                            sink,
                                             ts_path,
                                             status,
                                             written,
@@ -2626,7 +2974,7 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
                                            fifo3,
                                            gate,
                                            validator,
-                                           out,
+                                           sink,
                                            ts_path,
                                            status,
                                            written,
@@ -2783,7 +3131,8 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
     outer_candidate_t best;
     uint8_t *best_deint = NULL;
     size_t best_deint_count = 0;
-    FILE *out = NULL;
+    ts_output_sink_t sink;
+    int sink_ready = 0;
     uint32_t written = 0;
     uint32_t rs_bad = 0;
     uint32_t rs_ok = 0;
@@ -2799,17 +3148,20 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
     int live_mpeg_sync_enabled = 0;
     int fifo3_ready = 0;
     uint32_t processed_blocks = 0;
+    outer_scan_policy_t live_policy = outer_scan_policy_for_status(status);
     int rc = -1;
 
     memset(&best, 0, sizeof(best));
     memset(&fifo3, 0, sizeof(fifo3));
+    memset(&sink, 0, sizeof(sink));
+    sink.sock = RBDVBT_INVALID_SOCKET;
     ts_validator_init(&validator);
     if (rbdvbt_fifo_init(&fifo3, "FIFO3_TS_PACKETS", sizeof(rbdvbt_ts_packet_t), FIFO3_CAPACITY_PACKETS) != 0) {
         fprintf(stderr, "[outer] failed to initialize FIFO3 TS packet queue\n");
         goto done;
     }
     fifo3_ready = 1;
-    if (live_mode && strcmp(ts_path, "-") == 0) {
+    if (live_mode) {
         if (!live_ts_gate_ready) {
             ts_output_gate_init(&live_ts_gate, status != NULL ? status->wait_video_start : 0);
             live_ts_gate_ready = 1;
@@ -2824,12 +3176,31 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
     if (live_mode &&
         status != NULL &&
         isfinite(status->pilot_lock) &&
-        status->pilot_lock < 0.55) {
-        rbdvbt_outer_reset_live_stream();
-        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-            fprintf(stderr,
-                    "[outer-state] skip low-pilot chunk pilot_lock=%.5f; reset live outer stream\n",
-                    status->pilot_lock);
+        status->pilot_lock < LIVE_GRDVBT_PILOT_LOCK_MIN) {
+        if (!live_grdvbt_outer.valid) {
+            if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                fprintf(stderr,
+                        "[outer-state] skip low-pilot chunk pilot_lock=%.5f; keep pending acquisition bytes=%zu\n",
+                        status->pilot_lock,
+                        live_grdvbt_outer.pending_count);
+            }
+        } else {
+            live_grdvbt_outer.low_pilot_jobs++;
+            if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                fprintf(stderr,
+                        "[outer-state] skip low-pilot chunk pilot_lock=%.5f low_pilot_jobs=%u/%u; keeping outer cadence\n",
+                        status->pilot_lock,
+                        live_grdvbt_outer.low_pilot_jobs,
+                        live_policy.low_pilot_reset_limit);
+            }
+            if (live_grdvbt_outer.low_pilot_jobs >= live_policy.low_pilot_reset_limit) {
+                if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                    fprintf(stderr,
+                            "[outer-state] relock grdvbt_stream consecutive_low_pilot=%u; resetting outer cadence\n",
+                            live_grdvbt_outer.low_pilot_jobs);
+                }
+                rbdvbt_outer_reset_live_stream();
+            }
         }
         status_write_json(status,
                           &validator,
@@ -2839,11 +3210,21 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
                           0,
                           0,
                           0,
-                          RX_LOCK_RELOCK,
+                          gate->stdout_enabled ? RX_LOCK_DEGRADED : RX_LOCK_RELOCK,
                           gate->stdout_enabled,
                           gate->waiting_for_video_start,
                           "pilot-drop",
                           status->input_samples);
+        rbdvbt_live_health_note_outer(0,
+                                      0,
+                                      0,
+                                      0,
+                                      0,
+                                      0,
+                                      0,
+                                      0,
+                                      live_grdvbt_outer.pending_count,
+                                      "PILOT_DROP");
         rc = 0;
         goto done;
     }
@@ -2863,15 +3244,11 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
 	                      status != NULL ? status->input_samples : 0u);
 
     if (live_mode && !live_mpeg_sync_enabled) {
-        if (strcmp(ts_path, "-") == 0) {
-            out = stdout;
-        } else {
-            out = fopen(ts_path, "wb");
-            if (out == NULL) {
-                fprintf(stderr, "failed to open TS output: %s\n", ts_path);
-                goto done;
-            }
+        if (ts_output_sink_open(&sink, ts_path, live_mode) != 0) {
+            fprintf(stderr, "failed to open TS output: %s\n", ts_path);
+            goto done;
         }
+        sink_ready = 1;
 
         if (live_grdvbt_outer_process(inner,
                                       inner_count,
@@ -2879,7 +3256,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
                                       &fifo3,
                                       gate,
                                       &validator,
-                                      out,
+                                      &sink,
                                       ts_path,
                                       status,
                                       &written,
@@ -2914,11 +3291,6 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
                     ts_path);
         }
         ts_validator_report(&validator);
-        rbdvbt_live_health_note_outer(validator.packets,
-                                      validator.sync_bad,
-                                      validator.transport_errors,
-                                      validator.cc_errors,
-                                      rs_uncorrectable);
 
         if (processed_blocks > 0u &&
             (rs_ok == 0u || rs_uncorrectable >= rs_ok)) {
@@ -2927,21 +3299,31 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
                 written == 0u;
 
             live_grdvbt_outer.fail_jobs++;
+            if (hard_cadence_fail) {
+                live_grdvbt_outer.hard_fail_jobs++;
+            } else {
+                live_grdvbt_outer.hard_fail_jobs = 0u;
+            }
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                 fprintf(stderr,
-                        "[outer-state] degraded grdvbt_stream fail_jobs=%u rs_ok=%u rs_uncorrectable=%u written=%u rs_buffer=%u\n",
+                        "[outer-state] degraded grdvbt_stream fail_jobs=%u/%u hard_fail_jobs=%u/%u rs_ok=%u rs_uncorrectable=%u written=%u rs_buffer=%u\n",
                         live_grdvbt_outer.fail_jobs,
+                        live_policy.soft_fail_limit,
+                        live_grdvbt_outer.hard_fail_jobs,
+                        live_policy.hard_fail_limit,
                         rs_ok,
                         rs_uncorrectable,
                         written,
                         live_grdvbt_outer.rs_count);
             }
             lock_state = gate->stdout_enabled ? RX_LOCK_DEGRADED : RX_LOCK_RELOCK;
-            if (hard_cadence_fail || live_grdvbt_outer.fail_jobs >= LIVE_GRDVBT_SOFT_FAIL_LIMIT) {
+            if ((hard_cadence_fail && live_grdvbt_outer.hard_fail_jobs >= live_policy.hard_fail_limit) ||
+                live_grdvbt_outer.fail_jobs >= live_policy.soft_fail_limit) {
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                    if (hard_cadence_fail) {
+                    if (hard_cadence_fail && live_grdvbt_outer.hard_fail_jobs >= live_policy.hard_fail_limit) {
                         fprintf(stderr,
-                                "[outer-state] relock grdvbt_stream hard_cadence_fail blocks=%u rs_ok=%u written=%u; resetting outer cadence\n",
+                                "[outer-state] relock grdvbt_stream hard_cadence_fail jobs=%u blocks=%u rs_ok=%u written=%u; resetting outer cadence\n",
+                                live_grdvbt_outer.hard_fail_jobs,
                                 processed_blocks,
                                 rs_ok,
                                 written);
@@ -2957,10 +3339,31 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             }
         } else if (processed_blocks > 0u) {
             live_grdvbt_outer.fail_jobs = 0u;
+            live_grdvbt_outer.hard_fail_jobs = 0u;
+            live_grdvbt_outer.low_pilot_jobs = 0u;
+            live_grdvbt_outer.probation_lock = 0;
             live_grdvbt_outer.lock_jobs++;
             if (written > 0u && validator.packets > 0u) {
                 lock_state = RX_LOCK_LOCKED;
             }
+        }
+
+        {
+            const char *health_outer_state = lock_state_name(lock_state);
+
+            if (!live_grdvbt_outer.valid && live_grdvbt_outer.pending_count > 0u) {
+                health_outer_state = "ACQUIRE";
+            }
+            rbdvbt_live_health_note_outer(validator.packets,
+                                          validator.sync_bad,
+                                          validator.transport_errors,
+                                          validator.cc_errors,
+                                          rs_bad,
+                                          rs_corrected,
+                                          rs_uncorrectable,
+                                          written,
+                                          live_grdvbt_outer.pending_count,
+                                          health_outer_state);
         }
 
         status_write_json(status,
@@ -3011,15 +3414,11 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
 	            }
 	        }
 
-	        if (strcmp(ts_path, "-") == 0) {
-            out = stdout;
-        } else {
-            out = fopen(ts_path, "wb");
-            if (out == NULL) {
-                fprintf(stderr, "failed to open TS output: %s\n", ts_path);
-                goto done;
-            }
+	        if (ts_output_sink_open(&sink, ts_path, live_mode) != 0) {
+            fprintf(stderr, "failed to open TS output: %s\n", ts_path);
+            goto done;
         }
+        sink_ready = 1;
 
         for (;;) {
             uint8_t block[RS_BLOCK_LEN];
@@ -3027,7 +3426,9 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             uint8_t corrected[RS_BLOCK_LEN];
             uint8_t ts[RS_DATA_LEN];
             int correction_result;
-            int pilot_lock_ok = status == NULL || !isfinite(status->pilot_lock) || status->pilot_lock >= 0.55;
+            int pilot_lock_ok = status == NULL ||
+                !isfinite(status->pilot_lock) ||
+                status->pilot_lock >= LIVE_GRDVBT_PILOT_LOCK_MIN;
             rbdvbt_ts_packet_t fifo3_item;
             int fifo_rc;
             int have_block = live_outer_stream_pop_rs(block);
@@ -3107,7 +3508,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
                 if (block4_consume_fifo3_packet(&fifo3_item,
                                                 gate,
                                                 &validator,
-                                                out,
+                                                &sink,
                                                 ts_path,
                                                 live_mode,
                                                 pilot_lock_ok,
@@ -3282,15 +3683,11 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         goto done;
     }
 
-    if (strcmp(ts_path, "-") == 0) {
-        out = stdout;
-    } else {
-        out = fopen(ts_path, "wb");
-        if (out == NULL) {
-            fprintf(stderr, "failed to open TS output: %s\n", ts_path);
-            goto done;
-        }
+    if (ts_output_sink_open(&sink, ts_path, live_mode) != 0) {
+        fprintf(stderr, "failed to open TS output: %s\n", ts_path);
+        goto done;
     }
+    sink_ready = 1;
 
     {
         size_t offset = OUTER_TRANSIENT + best.rs_phase;
@@ -3303,7 +3700,9 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             uint8_t corrected[RS_BLOCK_LEN];
             uint8_t ts[RS_DATA_LEN];
             int correction_result;
-            int pilot_lock_ok = status == NULL || !isfinite(status->pilot_lock) || status->pilot_lock >= 0.55;
+            int pilot_lock_ok = status == NULL ||
+                !isfinite(status->pilot_lock) ||
+                status->pilot_lock >= LIVE_GRDVBT_PILOT_LOCK_MIN;
             rbdvbt_ts_packet_t fifo3_item;
             int fifo_rc;
 
@@ -3356,7 +3755,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
                 if (block4_consume_fifo3_packet(&fifo3_item,
                                                 gate,
                                                 &validator,
-                                                out,
+                                                &sink,
                                                 ts_path,
                                                 live_mode,
                                                 pilot_lock_ok,
@@ -3441,16 +3840,16 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
     }
 
 done:
-    if (out != NULL && gate != NULL && gate->write_buf_packets > 0u) {
-        if (ts_output_gate_flush(gate, out, ts_path) != 0) {
+    if (sink_ready && gate != NULL && gate->write_buf_packets > 0u) {
+        if (ts_output_gate_flush(gate, &sink, ts_path) != 0) {
             rc = -1;
         }
     }
     if (fifo3_ready) {
         rbdvbt_fifo_free(&fifo3);
     }
-    if (out != NULL && out != stdout) {
-        fclose(out);
+    if (sink_ready) {
+        ts_output_sink_close(&sink);
     }
     free(best_deint);
     return rc;

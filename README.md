@@ -56,7 +56,20 @@ Belangrijkste binaries:
 build/rbdvbt_rx             DVB-T receiver
 build/rbdvbt_status_watch   terminal monitor voor status JSON
 build/dvbt_fec_snr_plot     hulpprogramma voor performancegrafieken
+build/portsdown_iq_dump     maakt een synthetisch DVB-T IQ-bestand
+build/iq_airscatter_channel past een aircraft-scatter kanaal toe op s16 IQ
 ```
+
+## Windows GUI launcher
+
+Op Windows kan optioneel `rbdvbt_gui.exe` worden gebouwd. Dit is een Qt 6
+launcher die `rtl_sdr.exe`, `rbdvbt_rx.exe` en VLC direct start, de IQ- en
+transportstream-pijpen zonder shell verbindt, VLC in het hoofdvenster embedded
+toont en diagnose-informatie naar het clipboard kan kopieren.
+
+De GUI target bestaat alleen onder `WIN32` en verandert de normale Linux build
+van `rbdvbt_rx` niet. Zie `README_WINDOWS_GUI.txt` voor build-, packaging- en
+gebruikersinstructies.
 
 ## Basisgebruik
 
@@ -115,6 +128,66 @@ Met status JSON:
   --status-json /tmp/rx_status.json \
   --status-period-packets 50 \
   < capture.iq | ffplay -
+```
+
+Naar VLC of ffplay via UDP sturen, handig op Windows waar stdout-pipes naar
+VLC lastig kunnen zijn:
+
+```sh
+./build/rbdvbt_rx \
+  --probe-constellation \
+  --resample-to-dvbt-rate \
+  --dvbt-ir 1 \
+  --stdin \
+  --input-format u8 \
+  --sample-rate 1010526 \
+  --sr 250k \
+  --gi 1/32 \
+  --fec 2/3 \
+  --udp-out 127.0.0.1:10000 \
+  --wait-video-start \
+  < capture.iq
+```
+
+Open in VLC: `udp://@:10000`. Met ffplay kan dit met
+`ffplay -f mpegts udp://127.0.0.1:10000`.
+
+Aircraft-scatter looptest met 200/300/400 km, crossing-hoeken 30/70 graden,
+symbolrates 150k/250k/333k en SNR 3..9 dB:
+
+```sh
+TS_PATH=other_parties/portsdown4/video/SR333_FEC2-3_S2_Test.ts \
+  FEC=1/2 GI=1/32 tools/run_airscatter_looptest.sh
+```
+
+De looptest maakt eerst een schoon Portsdown-achtig IQ-bestand, genereert per
+scenario aircraft-scatter metadata met het model in
+`/home/rhardenb/repo-prop/airplanescatter`, past delay, Doppler, path-ratio,
+notches en AWGN toe, en draait daarna `rbdvbt_rx` op elk vervormd IQ-bestand.
+Gebruik hierbij altijd expliciete DVB-T parameters: `FEC=auto` en `GI=auto`
+worden door de looptest geweigerd, omdat de praktijkrun ook met opgegeven
+instellingen werkt en daarmee sneller lockt.
+Standaard gebruikt de kanaalstap `PATH_RATIO_OFFSET_DB=-10` om de direct- en
+aircraft-paden dichter bij gelijke amplitude te brengen; dat maakt de notch-test
+strenger. De resultaten staan standaard onder
+`/tmp/rbdvbt-airscatter-loop/summary.csv`.
+Naast `ts_bytes` bevat de summary per run ook decoder-metrics uit de log:
+frontend-lock/SNR, live chunk-resultaten, outer acquisition/relock/degrade
+tellingen, RS-correcties/uncorrectables en TS-fouten. Gebruik die kolommen voor
+praktijktesten waar een run wel frontend-lock heeft maar nog geen bruikbare
+outer/FEC-output levert.
+Als `TS_PATH` niet gezet is, gebruikt de generator null-packets; dat is nuttig
+voor frontend/FEC-logmetrics, maar niet voor `ts_bytes` als succesmetric.
+Gegenereerde impaired IQ-bestanden worden standaard na elke decode verwijderd;
+gebruik `KEEP_IMPAIRED_IQ=1` om ze te bewaren.
+
+De scenario-span is standaard `TEST_DURATION_S=40` seconden rond de passagepiek.
+Voor een snelle subset:
+
+```sh
+SR_LIST="250k" SNR_LIST="7 8" DISTANCE_LIST="300" CROSSING_LIST="70" \
+  TEST_DURATION_S=40 TS_PATH=other_parties/portsdown4/video/SR333_FEC2-3_S2_Test.ts \
+  FEC=1/2 GI=1/32 tools/run_airscatter_looptest.sh
 ```
 
 Status bekijken in een tweede terminal:
@@ -199,7 +272,8 @@ y-as toont het niveau in dB.
 | Parameter | Betekenis |
 |---|---|
 | `--stdout-ts` | Schrijf MPEG-TS naar `stdout`. Equivalent aan `--ts-out -`. |
-| `--ts-out FILE` | Schrijf MPEG-TS naar bestand. Gebruik `-` voor `stdout`. |
+| `--ts-out FILE` | Schrijf MPEG-TS naar bestand. Gebruik `-` voor `stdout` of `udp://IPv4:PORT` voor UDP. |
+| `--udp-out IPv4:PORT` | Schrijf MPEG-TS via UDP, bijvoorbeeld `--udp-out 127.0.0.1:10000` voor VLC op dezelfde computer. |
 | `--live` | Blijf stdin in opeenvolgende decode-chunks verwerken; bij zwakke chunks wordt opnieuw geacquireerd zonder het proces te stoppen. Stdout blijft uitsluitend MPEG-TS. |
 | `--live-symbols N` | Aantal OFDM-symbolen per live frontend chunk. `64` is de geteste standaard voor de huidige Linrad/SDR live pipeline. |
 | `--gui` | Toon live constellatie-, FIFO- en input-spectrumvensters wanneer X11 beschikbaar is. Het spectrum wordt gemaakt uit de inkomende IQ-samples, met frequentie op de x-as over de volledige sample-rate span en niveau in dB op de y-as. |

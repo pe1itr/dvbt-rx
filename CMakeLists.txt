@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(rbdvbt_rx VERSION 0.1.0 LANGUAGES C CXX)
+project(rbdvbt_rx VERSION 0.1.2 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -30,6 +30,9 @@ pkg_check_modules(FFTW3F REQUIRED fftw3f)
 
 target_include_directories(rbdvbt_rx PRIVATE ${FFTW3F_INCLUDE_DIRS})
 target_link_libraries(rbdvbt_rx PRIVATE m ${FFTW3F_LIBRARIES} Threads::Threads)
+if(WIN32)
+    target_link_libraries(rbdvbt_rx PRIVATE ws2_32)
+endif()
 if(X11_FOUND)
     target_compile_definitions(rbdvbt_rx PRIVATE RBDVBT_HAVE_X11=1)
     target_include_directories(rbdvbt_rx PRIVATE ${X11_INCLUDE_DIR})
@@ -100,3 +103,36 @@ target_compile_options(dvbt_fec_snr_plot PRIVATE
     -Wextra
     -Wpedantic
 )
+
+add_executable(iq_airscatter_channel
+    tools/iq_airscatter_channel.c
+)
+
+target_link_libraries(iq_airscatter_channel PRIVATE m)
+
+target_compile_options(iq_airscatter_channel PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+if(WIN32)
+    option(RBDVBT_BUILD_GUI "Build the Windows Qt GUI launcher" ON)
+endif()
+
+if(WIN32 AND RBDVBT_BUILD_GUI)
+    find_package(Qt6 REQUIRED COMPONENTS Widgets)
+
+    add_executable(rbdvbt_gui WIN32
+        gui/windows/rbdvbt_gui.cpp
+    )
+
+    set_target_properties(rbdvbt_gui PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+
+    target_link_libraries(rbdvbt_gui PRIVATE Qt6::Widgets)
+    target_compile_definitions(rbdvbt_gui PRIVATE RBDVBT_GUI_VERSION="${PROJECT_VERSION}")
+endif()
