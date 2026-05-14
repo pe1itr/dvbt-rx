@@ -383,6 +383,9 @@ private:
     {
         auto *box = new QGroupBox("Status", this);
         auto *layout = new QVBoxLayout(box);
+        signalLabel_ = new QLabel(box);
+        signalLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(signalLabel_);
         statusTable_ = new QTableWidget(4, 5, box);
         statusTable_->setHorizontalHeaderLabels({"Proces", "Status", "PID", "Exit", "Laatste fout"});
         statusTable_->verticalHeader()->hide();
@@ -613,6 +616,11 @@ private:
 
         rtlBytes_ = 0;
         tsBytes_ = 0;
+        ofdmLocked_ = false;
+        lastPilotLock_ = -1.0;
+        lastSnrText_ = "-";
+        lastServiceName_.clear();
+        lastProviderName_.clear();
         lastRtlData_ = QDateTime();
         lastTsData_ = QDateTime();
         startTime_ = QDateTime::currentDateTime();
@@ -817,8 +825,10 @@ private:
     {
         for (const QString &line : splitLines(process->readAllStandardError())) {
             appendTail(tail, line, 40);
-            if (source == "Decoder")
+            if (source == "Decoder") {
                 noteDecoderTsProgress(line);
+                noteDecoderSignalStatus(line);
+            }
             log(source, line);
         }
     }
@@ -835,6 +845,32 @@ private:
             return;
         tsBytes_ += packets * 188;
         lastTsData_ = QDateTime::currentDateTime();
+    }
+
+    void noteDecoderSignalStatus(const QString &line)
+    {
+        static const QRegularExpression dvbtRe("avg_pilot_lock=([0-9.]+)\\s+snr=([-0-9.]+)dB");
+        static const QRegularExpression tsRe("service=\"([^\"]*)\"\\s+provider=\"([^\"]*)\"");
+
+        const QRegularExpressionMatch dvbtMatch = dvbtRe.match(line);
+        if (dvbtMatch.hasMatch()) {
+            bool pilotOk = false;
+            bool snrOk = false;
+            const double pilot = dvbtMatch.captured(1).toDouble(&pilotOk);
+            const double snr = dvbtMatch.captured(2).toDouble(&snrOk);
+            if (pilotOk) {
+                lastPilotLock_ = pilot;
+                ofdmLocked_ = pilot >= 0.45;
+            }
+            if (snrOk)
+                lastSnrText_ = QString::number(snr, 'f', 2) + " dB";
+        }
+
+        const QRegularExpressionMatch tsMatch = tsRe.match(line);
+        if (tsMatch.hasMatch()) {
+            lastServiceName_ = tsMatch.captured(1).trimmed();
+            lastProviderName_ = tsMatch.captured(2).trimmed();
+        }
     }
 
     void forwardRtlToDecoder()
@@ -869,6 +905,11 @@ private:
 
         const qint64 rtlAge = lastRtlData_.isValid() ? lastRtlData_.msecsTo(QDateTime::currentDateTime()) / 1000 : -1;
         const qint64 tsAge = lastTsData_.isValid() ? lastTsData_.msecsTo(QDateTime::currentDateTime()) / 1000 : -1;
+        signalLabel_->setText(QString("OFDM lock: %1\nSNR: %2\nService: %3\nProvider: %4")
+            .arg(ofdmLocked_ ? "ja" : "nee")
+            .arg(lastSnrText_)
+            .arg(lastServiceName_.isEmpty() ? "-" : lastServiceName_)
+            .arg(lastProviderName_.isEmpty() ? "-" : lastProviderName_));
         countersLabel_->setText(QString("Input levert bytes: %1\nDecoder levert TS bytes: %2\nTijd sinds input data: %3\nTijd sinds TS data: %4\nTotaal input bytes: %5\nTotaal TS bytes: %6")
             .arg(rtlBytes_ > 0 ? "ja" : "nee")
             .arg(tsBytes_ > 0 ? "ja" : "nee")
@@ -977,6 +1018,11 @@ private:
         text += QString("Instellingen: input_format=%1 frequentie=%2 sample_rate=%3 gain=%4 symbol_rate=%5 gi=%6 fec=%7 loglevel=%8\n")
             .arg(settings_.inputFormat, settings_.frequency, settings_.rtlSampleRate, settings_.gain, settings_.symbolRate, settings_.guard, settings_.fec, settings_.loglevel);
         text += QString("Bytes: rtl=%1 ts=%2\n").arg(rtlBytes_).arg(tsBytes_);
+        text += QString("Signaal: ofdm_lock=%1 pilot_lock=%2 snr=%3 service=\"%4\" provider=\"%5\"\n")
+            .arg(ofdmLocked_ ? "ja" : "nee")
+            .arg(lastPilotLock_ >= 0.0 ? QString::number(lastPilotLock_, 'f', 5) : "-")
+            .arg(lastSnrText_)
+            .arg(lastServiceName_, lastProviderName_);
         text += "Processen:\n";
         text += processSummary("RTL-SDR", rtlProcess_) + "\n";
         text += processSummary("Decoder", decoderProcess_) + "\n";
@@ -1026,6 +1072,7 @@ private:
     QWidget *videoWidget_ = nullptr;
     QTableWidget *statusTable_ = nullptr;
     QLabel *countersLabel_ = nullptr;
+    QLabel *signalLabel_ = nullptr;
     QTabWidget *tabs_ = nullptr;
     QPlainTextEdit *allLog_ = nullptr;
     QPlainTextEdit *rtlLog_ = nullptr;
@@ -1041,6 +1088,11 @@ private:
     QElapsedTimer iqPlaybackClock_;
     qint64 rtlBytes_ = 0;
     qint64 tsBytes_ = 0;
+    bool ofdmLocked_ = false;
+    double lastPilotLock_ = -1.0;
+    QString lastSnrText_ = "-";
+    QString lastServiceName_;
+    QString lastProviderName_;
     QDateTime lastRtlData_;
     QDateTime lastTsData_;
     QDateTime startTime_;

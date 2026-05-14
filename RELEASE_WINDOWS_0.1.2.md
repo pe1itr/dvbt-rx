@@ -11,6 +11,8 @@
   zodat IQ-data uit `rtl_sdr.exe` niet door text-mode conversie beschadigd raakt.
 - De Windows GUI start de decoder nu met `--resample-to-dvbt-rate`, gelijk aan
   de aanbevolen batch/commandline-keten.
+- Het Windows GUI statuspaneel toont live OFDM lock, SNR, service name en
+  provider name uit de decoderlog.
 - Verbeterde live recovery bij zwakke of haperende signalen.
 - Outer decoder reset minder snel bij korte pilot-lock dips, zodat bruikbare
   MPEG-TS packets sneller bij VLC/ffplay aankomen.

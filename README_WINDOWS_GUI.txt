@@ -96,6 +96,8 @@ start VLC zelf met `udp://@:10000`.
 6. Klik `STOP` om VLC, decoder en RTL-SDR in die volgorde te stoppen.
 
 De video wordt in het hoofdvenster embedded via VLC `--drawable-hwnd`.
+Het statuspaneel toont live OFDM lock, SNR, service name en provider name op
+basis van de decoderlog.
 
 ### IQ-bestand afspelen
 
