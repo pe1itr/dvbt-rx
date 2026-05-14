@@ -65,11 +65,14 @@ C:\Program Files\VideoLAN\VLC\vlc.exe
 C:\Program Files (x86)\VideoLAN\VLC\vlc.exe
 ```
 
-De standaardinstellingen komen overeen met deze werkende commandline:
+De standaardinstellingen komen overeen met deze `cmd.exe`/batch commandline.
+Start VLC eerst; de decoder-pipe blijft live draaien en keert normaal niet
+terug zolang de ontvangst loopt.
 
 ```bat
-"C:\HamRadio\rbdvbt_rx-windows-x64\rtl_sdr.exe" -f 437000000 -s 1010526 -g 30 - | "C:\HamRadio\rbdvbt_rx-windows-x64\rbdvbt_rx.exe" --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --loglevel info
-"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe" udp://@:10000
+cd /d C:\HamRadio\rbdvbt_gui-windows-x64-0.1.2
+start "" "C:\Program Files\VideoLAN\VLC\vlc.exe" udp://@:10000
+rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --loglevel info
 ```
 
 De GUI voert dezelfde pipeline uit zonder batchfile en zonder shell-pipe, en

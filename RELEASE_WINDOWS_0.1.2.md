@@ -54,11 +54,12 @@ rbdvbt_rx.exe --udp-out 127.0.0.1:10000
 VLC udp://@:10000
 ```
 
-De commandline-equivalent is:
+De commandline-equivalent voor `cmd.exe` of een batchfile is:
 
 ```bat
+cd /d C:\HamRadio\rbdvbt_gui-windows-x64-0.1.2
+start "" "C:\Program Files\VideoLAN\VLC\vlc.exe" udp://@:10000
 rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --loglevel info
-vlc.exe udp://@:10000
 ```
 
 ## Te testen
