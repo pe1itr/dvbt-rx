@@ -653,7 +653,8 @@ private:
         rtlArgs_ = settings_.inputMode == "file" ? QStringList({settings_.iqPath}) :
             QStringList({"-f", settings_.frequency, "-s", settings_.rtlSampleRate, "-g", settings_.gain, "-"});
         decoderCommand_ = report.decoderPath;
-        decoderArgs_ = {"--stdin", "--live", "--input-format", settings_.inputFormat, "--sample-rate", settings_.rtlSampleRate,
+        decoderArgs_ = {"--stdin", "--live", "--resample-to-dvbt-rate",
+                        "--input-format", settings_.inputFormat, "--sample-rate", settings_.rtlSampleRate,
                         "--sr", settings_.symbolRate, "--gi", settings_.guard, "--fec", settings_.fec,
                         "--udp-out", kUdpTsOut, "--wait-video-start", "--loglevel", settings_.loglevel};
         vlcCommand_ = report.vlcPath;

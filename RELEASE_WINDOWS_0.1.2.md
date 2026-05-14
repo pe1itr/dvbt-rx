@@ -9,6 +9,8 @@
   `rtl_sdr.exe -> rbdvbt_rx.exe -> UDP -> VLC`.
 - `rbdvbt_rx.exe` zet Windows `stdin` en `stdout` expliciet in binary mode,
   zodat IQ-data uit `rtl_sdr.exe` niet door text-mode conversie beschadigd raakt.
+- De Windows GUI start de decoder nu met `--resample-to-dvbt-rate`, gelijk aan
+  de aanbevolen batch/commandline-keten.
 - Verbeterde live recovery bij zwakke of haperende signalen.
 - Outer decoder reset minder snel bij korte pilot-lock dips, zodat bruikbare
   MPEG-TS packets sneller bij VLC/ffplay aankomen.
@@ -55,7 +57,7 @@ VLC udp://@:10000
 De commandline-equivalent is:
 
 ```bat
-rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --loglevel info
+rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --loglevel info
 vlc.exe udp://@:10000
 ```
 

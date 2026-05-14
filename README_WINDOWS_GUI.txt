@@ -68,7 +68,7 @@ C:\Program Files (x86)\VideoLAN\VLC\vlc.exe
 De standaardinstellingen komen overeen met deze werkende commandline:
 
 ```bat
-"C:\HamRadio\rbdvbt_rx-windows-x64\rtl_sdr.exe" -f 437000000 -s 1010526 -g 30 - | "C:\HamRadio\rbdvbt_rx-windows-x64\rbdvbt_rx.exe" --stdin --live --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --loglevel info
+"C:\HamRadio\rbdvbt_rx-windows-x64\rtl_sdr.exe" -f 437000000 -s 1010526 -g 30 - | "C:\HamRadio\rbdvbt_rx-windows-x64\rbdvbt_rx.exe" --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --loglevel info
 "C:\Program Files (x86)\VideoLAN\VLC\vlc.exe" udp://@:10000
 ```
 
