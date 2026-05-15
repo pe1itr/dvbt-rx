@@ -58,6 +58,7 @@ FEC:         2/3
 Status JSON: /var/www/html/dvb/dvbt-rx-status.json
 SRT:         srt://44.137.26.85:4001?mode=caller&latency=500000
 Loglevel:    quiet
+AFC:         aan
 ```
 
 Standaard gebruikt het script de PI6EHV ffmpeg met SRT support naast de repo:
@@ -82,6 +83,13 @@ Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:
 
 ```sh
 LOGLEVEL=info tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+Het PI6EHV-startscript zet live AFC standaard aan, zodat de ontvanger kleine
+carrier-bin drift kan volgen. Voor een vergelijkende test kan dit uit:
+
+```sh
+AFC=0 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
 Het startscript bewaakt de receiverstatus. Nadat er eenmaal lock is geweest,

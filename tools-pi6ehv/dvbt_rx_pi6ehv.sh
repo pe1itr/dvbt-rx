@@ -18,6 +18,7 @@ gi="${GI:-1/32}"
 fec="${FEC:-2/3}"
 live_symbols="${LIVE_SYMBOLS:-64}"
 probe_symbols="${PROBE_SYMBOLS:-64}"
+afc="${AFC:-1}"
 input_format="${INPUT_FORMAT:-u8}"
 status_json="${STATUS_JSON:-/var/www/html/dvb/dvbt-rx-status.json}"
 loglevel="${LOGLEVEL:-quiet}"
@@ -57,6 +58,7 @@ Environment:
   BUILD_DIR       build directory. Default: ${build_dir}
   STATUS_JSON     receiver status JSON. Default: ${status_json}
   LOGLEVEL        receiver loglevel. Default: ${loglevel}
+  AFC             enable receiver AFC when set to 1. Default: ${afc}
   LOG_DIR         log directory. Default: ${log_dir}
   RXLOG           receiver log path. Default: ${rxlog}
   FFMPEG_LOGLEVEL ffmpeg loglevel. Default: ${ffmpeg_loglevel}
@@ -119,6 +121,11 @@ rx_args=(
 
 if [ "${video_start}" = "1" ]; then
     rx_args+=(--wait-video-start)
+fi
+if [ "${afc}" = "1" ]; then
+    rx_args+=(--afc)
+else
+    rx_args+=(--no-afc)
 fi
 if [ "${enable_gui}" = "1" ]; then
     rx_args+=(--gui)
