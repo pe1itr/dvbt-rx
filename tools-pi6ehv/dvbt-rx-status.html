@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RB-DVB-T RX Status</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f5f2;
+      --panel: #ffffff;
+      --text: #1d2528;
+      --muted: #657177;
+      --line: #d7ddd8;
+      --ok: #168a4a;
+      --warn: #b26b00;
+      --bad: #b3261e;
+      --idle: #879199;
+      --blue: #2868a8;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+
+    main {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 8px 0 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.4rem, 3vw, 2.1rem);
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+
+    .timestamp {
+      color: var(--muted);
+      font-size: 0.95rem;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .status-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 18px 0;
+    }
+
+    .summary {
+      min-height: 96px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .summary .label,
+    .metric .label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .summary .value {
+      margin-top: 8px;
+      font-size: 1.55rem;
+      font-weight: 760;
+      overflow-wrap: anywhere;
+    }
+
+    .summary .subvalue {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 0.95rem;
+      overflow-wrap: anywhere;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    section {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1rem;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .metrics {
+      display: grid;
+      gap: 10px;
+    }
+
+    .metric {
+      display: grid;
+      grid-template-columns: minmax(110px, 1fr) minmax(70px, auto);
+      gap: 12px;
+      align-items: baseline;
+      min-height: 34px;
+      border-bottom: 1px solid #edf0ed;
+      padding-bottom: 8px;
+    }
+
+    .metric:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .metric .value {
+      font-variant-numeric: tabular-nums;
+      font-weight: 680;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+
+    .bar {
+      grid-column: 1 / -1;
+      height: 9px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e5e9e5;
+    }
+
+    .bar span {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: var(--blue);
+      transition: width 180ms ease;
+    }
+
+    .lamps {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+    }
+
+    .lamp {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 28px;
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      flex: 0 0 12px;
+      border-radius: 50%;
+      background: var(--idle);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);
+    }
+
+    .lamp.on {
+      color: var(--text);
+      font-weight: 620;
+    }
+
+    .lamp.on .dot {
+      background: var(--ok);
+    }
+
+    .state {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #eef1ee;
+      color: var(--muted);
+      font-weight: 720;
+    }
+
+    .state.ok {
+      background: #dff2e7;
+      color: var(--ok);
+    }
+
+    .state.warn {
+      background: #fff1d6;
+      color: var(--warn);
+    }
+
+    .state.bad {
+      background: #fde8e5;
+      color: var(--bad);
+    }
+
+    .raw {
+      grid-column: 1 / -1;
+    }
+
+    pre {
+      max-height: 320px;
+      margin: 0;
+      overflow: auto;
+      font-size: 0.82rem;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    @media (max-width: 860px) {
+      main {
+        padding: 12px;
+      }
+
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .timestamp {
+        text-align: left;
+        white-space: normal;
+      }
+
+      .status-strip,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (min-width: 861px) and (max-width: 1080px) {
+      .status-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>RB-DVB-T RX Status</h1>
+        <div id="path" class="timestamp">dvb/dvbt-rx-status.json</div>
+      </div>
+      <div id="updated" class="timestamp">Geen data</div>
+    </header>
+
+    <div class="status-strip">
+      <div class="summary">
+        <div class="label">Lock</div>
+        <div id="locked" class="value"><span class="state">Wachten</span></div>
+        <div id="stage" class="subvalue">stage: -</div>
+      </div>
+      <div class="summary">
+        <div class="label">Kwaliteit</div>
+        <div id="quality" class="value">-</div>
+        <div class="bar"><span id="qualityBar"></span></div>
+      </div>
+      <div class="summary">
+        <div class="label">SNR</div>
+        <div id="snr" class="value">-</div>
+        <div id="pilot" class="subvalue">pilot lock: -</div>
+      </div>
+      <div class="summary">
+        <div class="label">Service</div>
+        <div id="service" class="value">-</div>
+        <div id="provider" class="subvalue">-</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <section>
+        <h2>DVB-T</h2>
+        <div class="metrics">
+          <div class="metric"><div class="label">Symbolrate</div><div id="symbolRate" class="value">-</div></div>
+          <div class="metric"><div class="label">FEC</div><div id="fec" class="value">-</div></div>
+          <div class="metric"><div class="label">Guard</div><div id="guard" class="value">-</div></div>
+          <div class="metric"><div class="label">FFT</div><div id="fft" class="value">-</div></div>
+          <div class="metric"><div class="label">Constellatie</div><div id="constellation" class="value">-</div></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Ontvanger</h2>
+        <div class="metrics">
+          <div class="metric"><div class="label">Input samples</div><div id="inputSamples" class="value">-</div></div>
+          <div class="metric"><div class="label">CFO</div><div id="cfo" class="value">-</div></div>
+          <div class="metric"><div class="label">Bin shift</div><div id="binShift" class="value">-</div></div>
+          <div class="metric"><div class="label">AFC</div><div id="afc" class="value">-</div></div>
+          <div class="metric"><div class="label">Video start</div><div id="videoStart" class="value">-</div></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Transportstream</h2>
+        <div class="metrics">
+          <div class="metric"><div class="label">Packets</div><div id="packets" class="value">-</div></div>
+          <div class="metric"><div class="label">Output packets</div><div id="writtenPackets" class="value">-</div></div>
+          <div class="metric"><div class="label">Program ID</div><div id="programId" class="value">-</div></div>
+          <div class="metric"><div class="label">Video PID</div><div id="videoPid" class="value">-</div></div>
+          <div class="metric"><div class="label">Audio PID</div><div id="audioPid" class="value">-</div></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Fouten</h2>
+        <div class="metrics">
+          <div class="metric"><div class="label">PE</div><div id="pe" class="value">-</div></div>
+          <div class="metric"><div class="label">Sync bad</div><div id="syncBad" class="value">-</div></div>
+          <div class="metric"><div class="label">TEI</div><div id="transportErrors" class="value">-</div></div>
+          <div class="metric"><div class="label">CC errors</div><div id="ccErrors" class="value">-</div></div>
+          <div class="metric"><div class="label">RS uncorrectable</div><div id="rsUncorrectable" class="value">-</div></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Lock-keten</h2>
+        <div id="lamps" class="lamps"></div>
+      </section>
+
+      <section class="raw">
+        <h2>JSON</h2>
+        <pre id="raw">Nog geen data.</pre>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const statusUrl = "dvb/dvbt-rx-status.json";
+    const refreshMs = 1000;
+    const ids = {};
+    const lampFields = [
+      ["lamp_symbol_rate", "Symbolrate"],
+      ["lamp_guard", "Guard"],
+      ["lamp_fec", "FEC"],
+      ["lamp_ofdm_sync", "OFDM sync"],
+      ["lamp_inner_fec", "Inner FEC"],
+      ["lamp_rs_lock", "RS lock"],
+      ["lamp_rs_clean", "RS clean"],
+      ["lamp_ts_sync", "TS sync"],
+      ["lamp_pat", "PAT"],
+      ["lamp_pmt", "PMT"],
+      ["lamp_sdt", "SDT"],
+      ["lamp_service", "Service"],
+      ["lamp_av", "A/V"],
+      ["lamp_output", "Output"]
+    ];
+
+    document.querySelectorAll("[id]").forEach((el) => {
+      ids[el.id] = el;
+    });
+
+    function dash(value) {
+      return value === null || value === undefined || value === "" ? "-" : String(value);
+    }
+
+    function number(value) {
+      if (value === null || value === undefined || value === "") {
+        return "-";
+      }
+      return Number(value).toLocaleString("nl-NL");
+    }
+
+    function fixed(value, digits, suffix) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return "-";
+      }
+      return `${Number(value).toFixed(digits)}${suffix || ""}`;
+    }
+
+    function pid(value) {
+      if (value === null || value === undefined || Number(value) === 8191) {
+        return "-";
+      }
+      return `${Number(value)} / 0x${Number(value).toString(16).toUpperCase()}`;
+    }
+
+    function ageText(unixSeconds) {
+      if (!unixSeconds) {
+        return "Geen receiver timestamp";
+      }
+      const date = new Date(Number(unixSeconds) * 1000);
+      const age = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+      return `${date.toLocaleString("nl-NL")} (${age}s geleden)`;
+    }
+
+    function setText(id, value) {
+      ids[id].textContent = value;
+    }
+
+    function setState(data) {
+      const stale = data.updated_unix && (Date.now() / 1000 - Number(data.updated_unix)) > 5;
+      const ok = data.locked === true;
+      let cls = "state";
+      let text = "Geen lock";
+
+      if (ok) {
+        cls += " ok";
+        text = "Locked";
+      } else if (stale) {
+        cls += " warn";
+        text = "Oud";
+      } else if (data.stage) {
+        cls += " bad";
+      }
+
+      ids.locked.innerHTML = `<span class="${cls}">${text}</span>`;
+    }
+
+    function renderLamps(data) {
+      ids.lamps.innerHTML = "";
+      lampFields.forEach(([field, label]) => {
+        const item = document.createElement("div");
+        item.className = `lamp${data[field] ? " on" : ""}`;
+        item.innerHTML = `<span class="dot"></span><span>${label}</span>`;
+        ids.lamps.appendChild(item);
+      });
+    }
+
+    function render(data) {
+      setState(data);
+      setText("updated", ageText(data.updated_unix));
+      setText("stage", `stage: ${dash(data.stage)} / ${dash(data.lock_state)}`);
+
+      const quality = Number(data.lock_quality || 0);
+      setText("quality", `${quality}%`);
+      ids.qualityBar.style.width = `${Math.max(0, Math.min(100, quality))}%`;
+      setText("snr", fixed(data.snr_db ?? data.snr, 2, " dB"));
+      setText("pilot", `pilot lock: ${fixed(data.pilot_lock, 3, "")}`);
+      setText("service", dash(data.service_name));
+      setText("provider", dash(data.service_provider));
+
+      setText("symbolRate", dash(data.symbol_rate));
+      setText("fec", dash(data.fec));
+      setText("guard", dash(data.guard));
+      setText("fft", dash(data.fft));
+      setText("constellation", dash(data.constellation));
+
+      setText("inputSamples", number(data.input_samples));
+      setText("cfo", fixed(data.cfo_hz, 1, " Hz"));
+      setText("binShift", dash(data.bin_shift));
+      setText("afc", data.afc_enabled ? "aan" : data.afc_advised ? "advies" : "uit");
+      setText("videoStart", data.waiting_for_video_start ? "wachten" : "open");
+
+      setText("packets", number(data.packets));
+      setText("writtenPackets", number(data.written_packets));
+      setText("programId", dash(data.program_id));
+      setText("videoPid", pid(data.video_pid));
+      setText("audioPid", pid(data.audio_pid));
+
+      setText("pe", number(data.pe));
+      setText("syncBad", number(data.sync_bad));
+      setText("transportErrors", number(data.transport_errors));
+      setText("ccErrors", number(data.cc_errors));
+      setText("rsUncorrectable", number(data.rs_uncorrectable));
+
+      renderLamps(data);
+      ids.raw.textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function update() {
+      try {
+        const response = await fetch(`${statusUrl}?t=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        render(await response.json());
+      } catch (err) {
+        ids.updated.textContent = `Geen JSON: ${err.message}`;
+        ids.locked.innerHTML = '<span class="state warn">Wachten</span>';
+      }
+    }
+
+    update();
+    setInterval(update, refreshMs);
+  </script>
+</body>
+</html>

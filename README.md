@@ -50,6 +50,21 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
+Op een Odroid/aarch64 Linux host kan dezelfde build via het hulpscript:
+
+```sh
+tools-pi6ehv/build_odroid_arm64.sh
+```
+
+Als de basispakketten nog ontbreken op Debian/Ubuntu:
+
+```sh
+INSTALL_DEPS=1 tools-pi6ehv/build_odroid_arm64.sh
+```
+
+Gebruik `WITH_X11=1` wanneer ook de optionele X11 GUI headers moeten worden
+geinstalleerd.
+
 Belangrijkste binaries:
 
 ```text
@@ -230,6 +245,54 @@ Met deze live sample-rate stream is `250k`, FEC `2/3`, GI `1/32` getest met
 stabiele pilot-lock, `rs_uncorr=0`, `cc=0` en geen FIFO-drops. Na de 64-state
 Viterbi optimalisatie ligt de Viterbi-tijd voor 64-symbol chunks typisch rond
 `0.125-0.127 s` op deze testopstelling.
+
+### RTL-SDR naar SRT
+
+Voor een Odroid of andere Linux ontvanger staat er een opstartscript dat de
+geteste pipeline combineert:
+
+```text
+rtl_sdr -> rbdvbt_rx -> MPEG-TS stdout -> ffmpeg -> SRT
+```
+
+Standaard gebruikt het script `436000000 Hz`, RTL-SDR device `00000001`,
+sample-rate `1010526`, symbolrate `333000`, gain `30`, FEC `2/3`, GI `1/32`
+en stuurt het naar
+`srt://44.137.26.85:4001?mode=caller&latency=500000`:
+
+```sh
+tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+De belangrijkste instellingen zijn via environment variabelen aan te passen:
+
+```sh
+SRT_URL='srt://44.137.26.85:4001?mode=caller&latency=500000' \
+FREQUENCY=436000000 \
+RTL_DEVICE=00000001 \
+SAMPLERATE=1010526 \
+SYMBOLRATE=333000 \
+GAIN=30 \
+FEC=2/3 \
+GI=1/32 \
+tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+Als ffmpeg niet in `PATH` staat:
+
+```sh
+FFMPEG=../ffmpeg/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+De receiver schrijft MPEG-TS schoon naar `stdout`; receiver-diagnostiek gaat
+naar `logs/rx_YYYYmmdd_HHMMSS.log`, en status JSON standaard naar
+`/var/www/html/dvb/dvbt-rx-status.json`. Zet `GUI=1` om ook `--gui` aan de receiver door te
+geven. Een lokale UDP-kopie voor meekijken kan met bijvoorbeeld
+`UDP_OUT=127.0.0.1:10000`.
+
+De losse webpagina `tools-pi6ehv/dvbt-rx-status.html` leest die JSON via
+`dvb/dvbt-rx-status.json`. Plaats de pagina op de webroot van de Odroid,
+bijvoorbeeld als `/var/www/html/dvbt-rx-status.html`.
 
 ### GUI
 
