@@ -406,6 +406,10 @@ Bij lock worden onder andere gevuld:
 - `locked`
 - `lock_quality`
 - `pilot_lock`
+- `afc_enabled`
+- `afc_advised`
+- `afc_delta_bins`
+- `afc_trend_count`
 - `ssi`
 - `sqi`
 - `snr`

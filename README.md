@@ -276,6 +276,7 @@ y-as toont het niveau in dB.
 | `--udp-out IPv4:PORT` | Schrijf MPEG-TS via UDP, bijvoorbeeld `--udp-out 127.0.0.1:10000` voor VLC op dezelfde computer. |
 | `--live` | Blijf stdin in opeenvolgende decode-chunks verwerken; bij zwakke chunks wordt opnieuw geacquireerd zonder het proces te stoppen. Stdout blijft uitsluitend MPEG-TS. |
 | `--live-symbols N` | Aantal OFDM-symbolen per live frontend chunk. `64` is de geteste standaard voor de huidige Linrad/SDR live pipeline. |
+| `--afc`, `--no-afc` | Zet live AFC aan of uit. AFC staat standaard uit en volgt alleen kleine carrier-bin drift wanneer pilot-lock sterk is of dezelfde drifttrend meerdere chunks zichtbaar blijft. |
 | `--gui` | Toon live constellatie-, FIFO- en input-spectrumvensters wanneer X11 beschikbaar is. Het spectrum wordt gemaakt uit de inkomende IQ-samples, met frequentie op de x-as over de volledige sample-rate span en niveau in dB op de y-as. |
 | `--wait-video-start` | Houd TS-output dicht tot PAT/PMT/video-PID bekend zijn en daarna een schoon video-startpunt langskomt. H.264 gebruikt SPS/PPS + IDR; H.265/HEVC gebruikt VPS/SPS/PPS + IDR/CRA. |
 | `--constellation-out FILE.csv` | Schrijf QPSK constellatiepunten. |
@@ -284,6 +285,7 @@ y-as toont het niveau in dB.
 | `--viterbi-out FILE.bin` | Schrijf bytes na inner Viterbi decoder. |
 | `--status-json FILE.json` | Schrijf periodiek receiverstatus als JSON. |
 | `--status-period-packets N` | Statusupdate elke `N` TS packets; tijdens input elke `N * 4096` IQ samples. |
+| `afc_advised` statusveld | JSON/status-watch advies om `--afc` te gebruiken wanneer een kleine carrier-bin drifttrend zichtbaar is; dit advies corrigeert niets zolang `--afc` uit staat. |
 | `--loglevel LEVEL` | Logdetail: `quiet`, `error`, `warn`, `info`, `debug` of `trace`. Default is `info`; gebruik `quiet` voor geen normale receiver-logoutput en `debug` voor uitgebreide DSP/FIFO-analyse. |
 | `--version` | Toon het versienummer en stop. |
 | `--help`, `--info` | Toon programma-informatie, ondersteunde modes en opties, en stop. |

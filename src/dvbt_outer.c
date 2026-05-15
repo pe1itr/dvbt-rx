@@ -2583,6 +2583,10 @@ static void status_write_json(const rbdvbt_status_context_t *status,
         fprintf(f, "  \"cfo_hz\": null,\n");
     }
     fprintf(f, "  \"bin_shift\": %d,\n", status->bin_shift);
+    fprintf(f, "  \"afc_enabled\": %s,\n", status->afc_enabled ? "true" : "false");
+    fprintf(f, "  \"afc_advised\": %s,\n", status->afc_advised ? "true" : "false");
+    fprintf(f, "  \"afc_delta_bins\": %d,\n", status->afc_delta_bins);
+    fprintf(f, "  \"afc_trend_count\": %u,\n", status->afc_trend_count);
     fprintf(f, "  \"symbol_phase\": %d,\n", status->symbol_phase);
     fprintf(f, "  \"pe\": %u,\n", pe);
     fprintf(f, "  \"service_id\": %u,\n", v->service_id);

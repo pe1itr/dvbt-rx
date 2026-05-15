@@ -30,6 +30,10 @@ typedef struct {
     unsigned ssi;
     unsigned sqi;
     double snr;
+    unsigned afc_enabled;
+    unsigned afc_advised;
+    int afc_delta_bins;
+    unsigned afc_trend_count;
     unsigned pe;
     unsigned service_id;
     unsigned program_id;
@@ -202,6 +206,17 @@ static unsigned json_get_uint(const char *json, const char *key)
     return value;
 }
 
+static int json_get_int(const char *json, const char *key)
+{
+    const char *p = find_key_value(json, key);
+    int value = 0;
+
+    if (p != NULL) {
+        (void)sscanf(p, "%d", &value);
+    }
+    return value;
+}
+
 static double json_get_double(const char *json, const char *key, int *present)
 {
     const char *p = find_key_value(json, key);
@@ -245,6 +260,10 @@ static void status_from_json(const char *json, status_t *s)
     s->ssi = json_get_uint(json, "ssi");
     s->sqi = json_get_uint(json, "sqi");
     s->snr = json_get_double(json, "snr", &s->have_snr);
+    s->afc_enabled = json_get_bool(json, "afc_enabled");
+    s->afc_advised = json_get_bool(json, "afc_advised");
+    s->afc_delta_bins = json_get_int(json, "afc_delta_bins");
+    s->afc_trend_count = json_get_uint(json, "afc_trend_count");
     s->pe = json_get_uint(json, "pe");
     s->service_id = json_get_uint(json, "service_id");
     s->program_id = json_get_uint(json, "program_id");
@@ -392,6 +411,11 @@ static void print_status(const char *path, const status_t *s, int clear_screen)
     }
     printf("  SSI: %3u %s\n", s->ssi, ssi_bar);
     printf("  SQI: %3u %s\n", s->sqi, sqi_bar);
+    printf("  AFC: %-3s advised: %-3s delta_bins: %+d trend: %u\n",
+           s->afc_enabled ? "on" : "off",
+           s->afc_advised ? "yes" : "no",
+           s->afc_delta_bins,
+           s->afc_trend_count);
     printf("  PE:  %u\n\n", s->pe);
 
     printf("Transport stream\n");

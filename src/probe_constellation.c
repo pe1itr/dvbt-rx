@@ -57,9 +57,17 @@ typedef struct {
     double cfo_hz;
     int32_t bin_shift;
     int32_t symbol_phase;
+    int afc_advised;
+    int32_t afc_delta_bins;
+    uint32_t afc_trend_count;
 } live_status_hold_t;
 
 static live_status_hold_t live_status_hold;
+
+static void live_status_hold_clear(void)
+{
+    memset(&live_status_hold, 0, sizeof(live_status_hold));
+}
 
 typedef struct {
     int valid;
@@ -1333,6 +1341,10 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
     status->ssi = 0u;
     status->wait_video_start = cfg->wait_video_start;
     status->live_mode = cfg->live_mode;
+    status->afc_enabled = cfg->afc_enabled;
+    status->afc_advised = 0;
+    status->afc_delta_bins = 0;
+    status->afc_trend_count = 0u;
     status->gui_enabled = cfg->gui;
 
     if (cfg->live_mode && live_status_hold.valid) {
@@ -1341,6 +1353,9 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
         status->cfo_hz = live_status_hold.cfo_hz;
         status->bin_shift = live_status_hold.bin_shift;
         status->symbol_phase = live_status_hold.symbol_phase;
+        status->afc_advised = live_status_hold.afc_advised;
+        status->afc_delta_bins = live_status_hold.afc_delta_bins;
+        status->afc_trend_count = live_status_hold.afc_trend_count;
         status->lock_quality = (uint32_t)(live_status_hold.pilot_lock * 100.0 + 0.5);
         if (status->lock_quality > 100u) {
             status->lock_quality = 100u;
@@ -1636,6 +1651,20 @@ typedef struct {
 static live_frontend_cursor_t live_frontend_cursor;
 static uint64_t live_soft_next_symbol_seq;
 static const char *live_frontend_sync_mode = "init";
+
+typedef struct {
+    int valid;
+    int candidate_bin_shift;
+    int candidate_direction;
+    uint32_t candidate_count;
+} live_afc_state_t;
+
+static live_afc_state_t live_afc_state;
+
+static void live_afc_clear(void)
+{
+    memset(&live_afc_state, 0, sizeof(live_afc_state));
+}
 
 static int resample_sinc_ratio(const complexf_t *in,
                                size_t in_count,
@@ -4721,6 +4750,9 @@ static uint32_t live_decode_invalidate_queued(const char *reason)
 #define LIVE_METADATA_VERIFY_SYMBOLS 8u
 #define LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR 16u
 #define LIVE_GRDVBT_TRACK_RADIUS 8u
+#define LIVE_AFC_BIN_SEARCH_RADIUS 3
+#define LIVE_AFC_MAX_BIN_STEP 1
+#define LIVE_AFC_TREND_CONFIRM_CHUNKS 2u
 
 static void qpsk_axis_bit_costs(float value, float costs[2])
 {
@@ -6364,6 +6396,99 @@ static int estimate_dvbt2k_pilot_phase(const complexf_t *shifted,
     return pilot_count >= 2u ? 0 : -1;
 }
 
+static int scan_dvbt2k_pilot_alignment(const rbdvbt_config_t *cfg,
+                                       const complexf_t *samples,
+                                       size_t count,
+                                       uint32_t start,
+                                       uint32_t gi_len,
+                                       uint32_t symbol_len,
+                                       double cfo_hz,
+                                       uint32_t scan_symbols,
+                                       int bin_first,
+                                       int bin_last,
+                                       int conjugate_first,
+                                       int conjugate_last,
+                                       int phase_first,
+                                       int phase_last,
+                                       fftwf_complex *fft_in,
+                                       fftwf_complex *fft_out,
+                                       complexf_t *shifted,
+                                       fftwf_plan plan,
+                                       int *out_bin_shift,
+                                       int *out_conjugate,
+                                       int *out_symbol_phase,
+                                       double *out_lock)
+{
+    double best_lock = -1.0;
+    int best_bin = 0;
+    int best_conj = 0;
+    int best_phase = 0;
+
+    for (int conjugate = conjugate_first; conjugate <= conjugate_last; ++conjugate) {
+        for (int symbol_phase = phase_first; symbol_phase <= phase_last; ++symbol_phase) {
+            for (int bin_shift = bin_first; bin_shift <= bin_last; ++bin_shift) {
+                double lock_sum = 0.0;
+                uint32_t lock_count = 0;
+
+                for (uint32_t s = 0; s < scan_symbols; ++s) {
+                    size_t base = (size_t)start + (size_t)s * symbol_len + gi_len;
+                    double phase_intercept = 0.0;
+                    double phase_slope = 0.0;
+                    double pilot_lock = 0.0;
+                    uint32_t pilot_count = 0;
+
+                    if (base + RBDVBT_DVBT_2K_FFT_SIZE >= count) {
+                        break;
+                    }
+
+                    for (uint32_t k = 0; k < RBDVBT_DVBT_2K_FFT_SIZE; ++k) {
+                        double t = (double)(base + k) / (double)cfg->sample_rate_hz;
+                        complexf_t v = c_rotate(samples[base + k], -2.0 * M_PI * cfo_hz * t);
+                        fft_in[k][0] = v.re;
+                        fft_in[k][1] = v.im;
+                    }
+
+                    fftwf_execute(plan);
+                    fftshift_copy(fft_out, shifted, RBDVBT_DVBT_2K_FFT_SIZE);
+
+                    if (estimate_dvbt2k_pilot_phase(shifted,
+                                                    s + (uint32_t)symbol_phase,
+                                                    bin_shift,
+                                                    conjugate,
+                                                    &phase_intercept,
+                                                    &phase_slope,
+                                                    &pilot_lock,
+                                                    &pilot_count) == 0) {
+                        lock_sum += pilot_lock;
+                        lock_count++;
+                    }
+                }
+
+                if (lock_count > 0) {
+                    double lock = lock_sum / (double)lock_count;
+
+                    if (lock > best_lock) {
+                        best_lock = lock;
+                        best_bin = bin_shift;
+                        best_conj = conjugate;
+                        best_phase = symbol_phase;
+                    }
+                }
+            }
+        }
+    }
+
+    if (best_lock < 0.0) {
+        return -1;
+    }
+
+    *out_bin_shift = best_bin;
+    *out_conjugate = best_conj;
+    *out_symbol_phase = best_phase;
+    *out_lock = best_lock;
+    return 0;
+}
+
 static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                                            const complexf_t *samples,
                                            size_t count,
@@ -6400,11 +6525,19 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     int best_bin_shift = 0;
     int best_conjugate = 0;
     int best_symbol_phase = 0;
+    int advisory_bin_shift = 0;
+    int advisory_conjugate = 0;
+    int advisory_symbol_phase = 0;
+    int have_advisory_alignment = 0;
     double best_alignment_lock = -1.0;
+    double advisory_alignment_lock = -1.0;
     uint64_t frame_symbol_seq_start = live_soft_next_symbol_seq;
     uint64_t first_symbol_sample_abs = 0u;
     uint64_t next_symbol_sample_abs = 0u;
     uint64_t expected_symbol_sample_abs = 0u;
+    int afc_advised = 0;
+    int afc_delta_bins = 0;
+    uint32_t afc_trend_count = 0u;
     int frontend_continuous = 0;
     int rc = -1;
     double demod_t0 = 0.0;
@@ -6452,9 +6585,6 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     demod_t0 = monotonic_seconds();
     {
         uint32_t scan_symbols = max_symbols > 24u ? 24u : max_symbols;
-        int bin_shift;
-        int conjugate;
-        int symbol_phase;
         int bin_first = -64;
         int bin_last = 64;
         int conjugate_first = 0;
@@ -6467,8 +6597,19 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             if (live_frontend_cursor.valid &&
                 live_frontend_cursor.sample_rate_hz == cfg->sample_rate_hz &&
                 live_frontend_cursor.symbol_len == symbol_len) {
-                bin_first = live_frontend_cursor.bin_shift;
-                bin_last = bin_first;
+                if (cfg->afc_enabled) {
+                    bin_first = live_frontend_cursor.bin_shift - LIVE_AFC_BIN_SEARCH_RADIUS;
+                    bin_last = live_frontend_cursor.bin_shift + LIVE_AFC_BIN_SEARCH_RADIUS;
+                    if (bin_first < -64) {
+                        bin_first = -64;
+                    }
+                    if (bin_last > 64) {
+                        bin_last = 64;
+                    }
+                } else {
+                    bin_first = live_frontend_cursor.bin_shift;
+                    bin_last = bin_first;
+                }
                 conjugate_first = live_frontend_cursor.conjugate;
                 conjugate_last = conjugate_first;
             } else {
@@ -6477,67 +6618,86 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             }
         }
 
-        for (conjugate = conjugate_first; conjugate <= conjugate_last; ++conjugate) {
-            for (symbol_phase = phase_first; symbol_phase <= phase_last; ++symbol_phase) {
-                for (bin_shift = bin_first; bin_shift <= bin_last; ++bin_shift) {
-                    double lock_sum = 0.0;
-                    uint32_t lock_count = 0;
+        if (scan_dvbt2k_pilot_alignment(cfg,
+                                        samples,
+                                        count,
+                                        start,
+                                        gi_len,
+                                        symbol_len,
+                                        cfo_hz,
+                                        scan_symbols,
+                                        bin_first,
+                                        bin_last,
+                                        conjugate_first,
+                                        conjugate_last,
+                                        phase_first,
+                                        phase_last,
+                                        fft_in,
+                                        fft_out,
+                                        shifted,
+                                        plan,
+                                        &best_bin_shift,
+                                        &best_conjugate,
+                                        &best_symbol_phase,
+                                        &best_alignment_lock) != 0) {
+            fprintf(stderr, "[pilot-scan] no valid pilot alignment found\n");
+            goto done;
+        }
 
-                    for (uint32_t s = 0; s < scan_symbols; ++s) {
-                        size_t base = (size_t)start + (size_t)s * symbol_len + gi_len;
-                        double phase_intercept = 0.0;
-                        double phase_slope = 0.0;
-                        double pilot_lock = 0.0;
-                        uint32_t pilot_count = 0;
+        advisory_bin_shift = best_bin_shift;
+        advisory_conjugate = best_conjugate;
+        advisory_symbol_phase = best_symbol_phase;
+        advisory_alignment_lock = best_alignment_lock;
+        have_advisory_alignment = 1;
+        if (cfg->live_mode &&
+            !cfg->afc_enabled &&
+            live_frontend_cursor.valid &&
+            live_frontend_cursor.sample_rate_hz == cfg->sample_rate_hz &&
+            live_frontend_cursor.symbol_len == symbol_len) {
+            int adv_bin_first = live_frontend_cursor.bin_shift - LIVE_AFC_BIN_SEARCH_RADIUS;
+            int adv_bin_last = live_frontend_cursor.bin_shift + LIVE_AFC_BIN_SEARCH_RADIUS;
 
-                        if (base + RBDVBT_DVBT_2K_FFT_SIZE >= count) {
-                            break;
-                        }
-
-                        for (uint32_t k = 0; k < RBDVBT_DVBT_2K_FFT_SIZE; ++k) {
-                            double t = (double)(base + k) / (double)cfg->sample_rate_hz;
-                            complexf_t v = c_rotate(samples[base + k], -2.0 * M_PI * cfo_hz * t);
-                            fft_in[k][0] = v.re;
-                            fft_in[k][1] = v.im;
-                        }
-
-                        fftwf_execute(plan);
-                        fftshift_copy(fft_out, shifted, RBDVBT_DVBT_2K_FFT_SIZE);
-
-                        if (estimate_dvbt2k_pilot_phase(shifted,
-                                                        s + (uint32_t)symbol_phase,
-                                                        bin_shift,
-                                                        conjugate,
-                                                        &phase_intercept,
-                                                        &phase_slope,
-                                                        &pilot_lock,
-                                                        &pilot_count) == 0) {
-                            lock_sum += pilot_lock;
-                            lock_count++;
-                        }
-                    }
-
-                    if (lock_count > 0) {
-                        double lock = lock_sum / (double)lock_count;
-
-                        if (lock > best_alignment_lock) {
-                            best_alignment_lock = lock;
-                            best_bin_shift = bin_shift;
-                            best_conjugate = conjugate;
-                            best_symbol_phase = symbol_phase;
-                        }
-                    }
-                }
+            if (adv_bin_first < -64) {
+                adv_bin_first = -64;
+            }
+            if (adv_bin_last > 64) {
+                adv_bin_last = 64;
+            }
+            if (scan_dvbt2k_pilot_alignment(cfg,
+                                            samples,
+                                            count,
+                                            start,
+                                            gi_len,
+                                            symbol_len,
+                                            cfo_hz,
+                                            scan_symbols,
+                                            adv_bin_first,
+                                            adv_bin_last,
+                                            live_frontend_cursor.conjugate,
+                                            live_frontend_cursor.conjugate,
+                                            phase_first,
+                                            phase_last,
+                                            fft_in,
+                                            fft_out,
+                                            shifted,
+                                            plan,
+                                            &advisory_bin_shift,
+                                            &advisory_conjugate,
+                                            &advisory_symbol_phase,
+                                            &advisory_alignment_lock) != 0) {
+                have_advisory_alignment = 0;
             }
         }
 
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
             fprintf(stderr,
-                    "[pilot-scan] best_bin_shift=%d conjugate=%d symbol_phase_mod4=%d pilot_lock=%.5f scan_symbols=%u\n",
+                    "[pilot-scan] best_bin_shift=%d conjugate=%d symbol_phase_mod4=%d pilot_lock=%.5f advisory_bin_shift=%d advisory_lock=%.5f scan_symbols=%u\n",
                     best_bin_shift,
                     best_conjugate,
                     best_symbol_phase,
                     best_alignment_lock,
+                    have_advisory_alignment ? advisory_bin_shift : best_bin_shift,
+                    have_advisory_alignment ? advisory_alignment_lock : best_alignment_lock,
                     scan_symbols);
         }
         demod_scan_t1 = monotonic_seconds();
@@ -6839,9 +6999,13 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
 
 	if (cfg->live_mode) {
 	    uint32_t first_used_symbol_phase = (uint32_t)((best_symbol_phase + (int)(skip_symbols & 0x03u)) & 0x03);
+        double avg_pilot_lock = pilot_lock_count > 0 ? pilot_lock_sum / (double)pilot_lock_count : 0.0;
         int health_have_continuity = 0;
         uint64_t health_delta_samples = 0u;
         uint64_t health_phase_delta_samples = 0u;
+        int afc_bin_shift_allowed = 0;
+        int afc_bin_delta = 0;
+        uint32_t afc_confirm_count = 0u;
 
 	    first_symbol_sample_abs = live_resampled_chunk_start_abs +
 	        (uint64_t)start +
@@ -6866,18 +7030,55 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             health_have_continuity = 1;
             health_delta_samples = delta;
             health_phase_delta_samples = phase_delta;
+            if (have_advisory_alignment &&
+                advisory_conjugate == live_frontend_cursor.conjugate) {
+                afc_bin_delta = advisory_bin_shift - live_frontend_cursor.bin_shift;
+            } else {
+                afc_bin_delta = best_bin_shift - live_frontend_cursor.bin_shift;
+            }
+            if (afc_bin_delta == 0) {
+                live_afc_clear();
+            } else if (abs(afc_bin_delta) <= LIVE_AFC_MAX_BIN_STEP &&
+                       avg_pilot_lock >= LIVE_METADATA_PILOT_LOCK_MIN) {
+                int direction = afc_bin_delta > 0 ? 1 : -1;
+
+                if (avg_pilot_lock >= LIVE_METADATA_PILOT_LOCK_STRONG) {
+                    afc_advised = 1;
+                } else if (live_afc_state.valid &&
+                           live_afc_state.candidate_bin_shift == live_frontend_cursor.bin_shift + afc_bin_delta &&
+                           live_afc_state.candidate_direction == direction) {
+                    live_afc_state.candidate_count++;
+                    if (live_afc_state.candidate_count >= LIVE_AFC_TREND_CONFIRM_CHUNKS) {
+                        afc_advised = 1;
+                    }
+                } else {
+                    live_afc_state.valid = 1;
+                    live_afc_state.candidate_bin_shift = live_frontend_cursor.bin_shift + afc_bin_delta;
+                    live_afc_state.candidate_direction = direction;
+                    live_afc_state.candidate_count = 1u;
+                }
+                afc_confirm_count = live_afc_state.candidate_count;
+                afc_bin_shift_allowed = cfg->afc_enabled && afc_advised;
+            } else {
+                live_afc_clear();
+            }
+            afc_delta_bins = afc_bin_delta;
+            afc_trend_count = afc_confirm_count;
 		    if (delta <= LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR &&
 		        phase_delta <= LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR &&
-		        best_bin_shift == live_frontend_cursor.bin_shift &&
+		        (best_bin_shift == live_frontend_cursor.bin_shift || afc_bin_shift_allowed) &&
 	        best_conjugate == live_frontend_cursor.conjugate &&
 	        pilot_lock_count > 0 &&
 	        (pilot_lock_sum / (double)pilot_lock_count) >= 0.45) {
 	        frontend_continuous = 1;
 	        frame_symbol_seq_start = live_frontend_cursor.symbol_seq;
+            if (afc_bin_shift_allowed) {
+                live_afc_clear();
+            }
 	    }
             if (cfg->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                 fprintf(stderr,
-                        "[frontend-cont] mode=%s first_abs=%llu expected_abs=%llu delta=%lld delta_symbols=%lld phase_delta=%llu start=%u skip=%u used=%u seq=%llu cursor_seq=%llu continuous=%d bin=%d/%d conj=%d/%d lock=%.5f\n",
+                        "[frontend-cont] mode=%s first_abs=%llu expected_abs=%llu delta=%lld delta_symbols=%lld phase_delta=%llu start=%u skip=%u used=%u seq=%llu cursor_seq=%llu continuous=%d bin=%d/%d afc_delta=%d afc_ok=%d afc_count=%u conj=%d/%d lock=%.5f\n",
                         live_frontend_sync_mode,
                         (unsigned long long)first_symbol_sample_abs,
                         (unsigned long long)expected,
@@ -6892,9 +7093,12 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                         frontend_continuous,
                         best_bin_shift,
                         live_frontend_cursor.bin_shift,
+                        afc_bin_delta,
+                        afc_bin_shift_allowed,
+                        afc_confirm_count,
                         best_conjugate,
                         live_frontend_cursor.conjugate,
-                        pilot_lock_count > 0 ? pilot_lock_sum / (double)pilot_lock_count : 0.0);
+                        avg_pilot_lock);
             }
         }
         if (!frontend_continuous) {
@@ -6990,16 +7194,11 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         status.ssi = (uint32_t)(ssi_float + 0.5);
         status.wait_video_start = cfg->wait_video_start;
         status.live_mode = cfg->live_mode;
+        status.afc_enabled = cfg->afc_enabled;
+        status.afc_advised = afc_advised;
+        status.afc_delta_bins = afc_delta_bins;
+        status.afc_trend_count = afc_trend_count;
         status.gui_enabled = cfg->gui;
-
-        if (cfg->live_mode) {
-            live_status_hold.valid = 1;
-            live_status_hold.pilot_lock = avg_pilot_lock;
-            live_status_hold.snr_db = snr_db;
-            live_status_hold.cfo_hz = cfo_hz;
-            live_status_hold.bin_shift = best_bin_shift;
-            live_status_hold.symbol_phase = best_symbol_phase;
-        }
 
         if (cfg->gui) {
             gui_constellation_submit(viterbi_symbols,
@@ -7020,6 +7219,8 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                             avg_pilot_lock,
                             snr_db);
                 }
+                live_status_hold_clear();
+                live_afc_clear();
                 live_symbol_continuity_ok = 0;
                 live_soft_dibit_fifo.count = 0u;
                 live_soft_dibit_fifo.symbol_count = 0u;
@@ -7031,6 +7232,15 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 rc = 0;
                 goto done;
             }
+            live_status_hold.valid = 1;
+            live_status_hold.pilot_lock = avg_pilot_lock;
+            live_status_hold.snr_db = snr_db;
+            live_status_hold.cfo_hz = cfo_hz;
+            live_status_hold.bin_shift = best_bin_shift;
+            live_status_hold.symbol_phase = best_symbol_phase;
+            live_status_hold.afc_advised = afc_advised;
+            live_status_hold.afc_delta_bins = afc_delta_bins;
+            live_status_hold.afc_trend_count = afc_trend_count;
             if (live_soft_dibit_fifo_process(cfg->fec,
                                              viterbi_symbols,
                                              viterbi_model_symbols,
@@ -7867,6 +8077,8 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         live_sync_hint.cp_score = score;
     } else if (effective_cfg.live_mode && rc != RBDVBT_PROBE_EOF) {
         live_sync_hint.valid = 0;
+        live_status_hold_clear();
+        live_afc_clear();
     }
 
 done:

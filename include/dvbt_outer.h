@@ -23,6 +23,10 @@ typedef struct {
     uint32_t ssi;
     int wait_video_start;
     int live_mode;
+    int afc_enabled;
+    int afc_advised;
+    int32_t afc_delta_bins;
+    uint32_t afc_trend_count;
     int gui_enabled;
 } rbdvbt_status_context_t;
 

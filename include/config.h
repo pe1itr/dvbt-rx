@@ -49,6 +49,7 @@ typedef struct {
     int use_stdin;
     int probe_constellation;
     int live_mode;
+    int afc_enabled;
     int resample_x4;
     int resample_to_dvbt_rate;
     uint32_t dvbt_ir;

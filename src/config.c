@@ -160,6 +160,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
     cfg->fec = RBDVBT_FEC_1_2;
     cfg->status_period_packets = 100;
     cfg->log_level = RBDVBT_LOG_INFO;
+    cfg->afc_enabled = 0;
 
     for (i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -177,6 +178,10 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
         } else if (strcmp(arg, "--live") == 0) {
             cfg->live_mode = 1;
             cfg->probe_constellation = 1;
+        } else if (strcmp(arg, "--afc") == 0) {
+            cfg->afc_enabled = 1;
+        } else if (strcmp(arg, "--no-afc") == 0) {
+            cfg->afc_enabled = 0;
         } else if (strcmp(arg, "--gui") == 0) {
             cfg->gui = 1;
             cfg->probe_constellation = 1;
@@ -359,7 +364,7 @@ void rbdvbt_print_usage(const char *argv0)
 {
     fprintf(stderr,
             "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|150k|250k|333k|500k|125000|150000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|-|udp://127.0.0.1:10000 --wait-video-start\n"
-            "       --gui --live-symbols N --loglevel quiet|error|warn|info|debug|trace --version --info\n"
+            "       --gui --live-symbols N --afc --no-afc --loglevel quiet|error|warn|info|debug|trace --version --info\n"
             "       use --ts-out -, --stdout-ts, or --udp-out IPv4:PORT for MPEG-TS output; use --status-json status.json for receiver status]\n",
             argv0);
 }
@@ -402,6 +407,7 @@ void rbdvbt_print_info(const char *argv0)
     printf("Live and GUI options:\n");
     printf("  --live                           Decode a continuous stdin IQ stream\n");
     printf("  --live-symbols N                 OFDM symbols per live frontend chunk\n");
+    printf("  --afc, --no-afc                  Enable or disable live carrier-bin AFC, default off\n");
     printf("  --gui                            Show constellation, FIFO, spectrum, and status windows\n\n");
     printf("Diagnostics and files:\n");
     printf("  --loglevel quiet|error|warn|info|debug|trace\n");
