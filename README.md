@@ -71,7 +71,7 @@ Belangrijkste binaries:
 build/rbdvbt_rx             DVB-T receiver
 build/rbdvbt_status_watch   terminal monitor voor status JSON
 build/dvbt_fec_snr_plot     hulpprogramma voor performancegrafieken
-build/portsdown_iq_dump     maakt een synthetisch DVB-T IQ-bestand
+build/portsdown_iq_dump     maakt een synthetisch DVB-T IQ-bestand, alleen wanneer other_parties/portsdown4 aanwezig is
 build/iq_airscatter_channel past een aircraft-scatter kanaal toe op s16 IQ
 ```
 

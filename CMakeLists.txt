@@ -67,21 +67,25 @@ set(PORTSDOWN_DVBT_STACK_SOURCES
     ${PORTSDOWN_DVBT_STACK_DIR}/dvbt_modulator.cpp
 )
 
-add_executable(portsdown_iq_dump
-    tools/portsdown_iq_dump.cpp
-    ${PORTSDOWN_DVBT_STACK_SOURCES}
-)
+if(EXISTS "${PORTSDOWN_DVBT_STACK_DIR}/dvb_conv.cpp")
+    add_executable(portsdown_iq_dump
+        tools/portsdown_iq_dump.cpp
+        ${PORTSDOWN_DVBT_STACK_SOURCES}
+    )
 
-target_include_directories(portsdown_iq_dump PRIVATE
-    ${PORTSDOWN_DVBT_STACK_DIR}
-    ${FFTW3F_INCLUDE_DIRS}
-)
-target_link_libraries(portsdown_iq_dump PRIVATE m ${FFTW3F_LIBRARIES})
+    target_include_directories(portsdown_iq_dump PRIVATE
+        ${PORTSDOWN_DVBT_STACK_DIR}
+        ${FFTW3F_INCLUDE_DIRS}
+    )
+    target_link_libraries(portsdown_iq_dump PRIVATE m ${FFTW3F_LIBRARIES})
 
-target_compile_options(portsdown_iq_dump PRIVATE
-    -Wall
-    -Wextra
-)
+    target_compile_options(portsdown_iq_dump PRIVATE
+        -Wall
+        -Wextra
+    )
+else()
+    message(STATUS "Skipping portsdown_iq_dump; external Portsdown DVB-T stack not found")
+endif()
 
 add_executable(rbdvbt_status_watch
     tools/rbdvbt_status_watch.c
