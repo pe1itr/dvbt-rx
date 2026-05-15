@@ -183,6 +183,22 @@ typedef struct {
     uint32_t cc_errors;
 } ts_validator_t;
 
+typedef struct {
+    int valid;
+    ts_validator_t validator;
+    time_t updated_unix;
+    uint32_t rs_bad;
+    uint32_t rs_ok;
+    uint32_t rs_corrected;
+    uint32_t rs_corrected_bytes;
+    uint32_t rs_uncorrectable;
+    uint32_t written_packets;
+} live_status_snapshot_t;
+
+#define STATUS_LIVE_HOLD_SECONDS 5
+
+static live_status_snapshot_t live_status_snapshot;
+
 static void live_outer_alignment_note_result(uint32_t rs_ok,
                                              uint32_t rs_uncorrectable,
                                              uint32_t written,
@@ -1400,6 +1416,7 @@ void rbdvbt_outer_reset_live_stream(void)
     live_outer_stream_reset();
     live_grdvbt_outer_reset();
     live_outer_alignment.valid = 0;
+    memset(&live_status_snapshot, 0, sizeof(live_status_snapshot));
 }
 
 static int live_mpeg_sync_reserve(size_t extra)
@@ -2455,6 +2472,58 @@ static uint32_t status_sqi(const ts_validator_t *v, uint32_t rs_uncorrectable)
     return (uint32_t)(100u - (penalties * 100u) / v->packets);
 }
 
+static int status_validator_has_program(const ts_validator_t *v)
+{
+    return v != NULL &&
+        v->packets > 0u &&
+        v->pat_packets > 0u &&
+        v->pmt_packets > 0u;
+}
+
+static int status_validator_has_useful_data(const ts_validator_t *v,
+                                            uint32_t rs_ok,
+                                            uint32_t written_packets)
+{
+    return v != NULL &&
+        (v->packets > 0u ||
+         v->pat_packets > 0u ||
+         v->pmt_packets > 0u ||
+         v->sdt_packets > 0u ||
+         v->service_id != 0u ||
+         v->service_name[0] != '\0' ||
+         v->video_pid != 0x1fffu ||
+         v->audio_pid != 0x1fffu ||
+         rs_ok > 0u ||
+         written_packets > 0u);
+}
+
+static void live_status_snapshot_update(const ts_validator_t *v,
+                                        time_t updated_unix,
+                                        uint32_t rs_bad,
+                                        uint32_t rs_ok,
+                                        uint32_t rs_corrected,
+                                        uint32_t rs_corrected_bytes,
+                                        uint32_t rs_uncorrectable,
+                                        uint32_t written_packets)
+{
+    if (!status_validator_has_useful_data(v, rs_ok, written_packets)) {
+        return;
+    }
+    if (status_validator_has_program(&live_status_snapshot.validator) &&
+        !status_validator_has_program(v)) {
+        return;
+    }
+    live_status_snapshot.valid = 1;
+    live_status_snapshot.validator = *v;
+    live_status_snapshot.updated_unix = updated_unix;
+    live_status_snapshot.rs_bad = rs_bad;
+    live_status_snapshot.rs_ok = rs_ok;
+    live_status_snapshot.rs_corrected = rs_corrected;
+    live_status_snapshot.rs_corrected_bytes = rs_corrected_bytes;
+    live_status_snapshot.rs_uncorrectable = rs_uncorrectable;
+    live_status_snapshot.written_packets = written_packets;
+}
+
 static void status_write_json(const rbdvbt_status_context_t *status,
                               const ts_validator_t *v,
                               uint32_t rs_bad,
@@ -2476,6 +2545,13 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     uint32_t locked;
     uint32_t lock_quality;
     uint32_t ssi;
+    const ts_validator_t *display_v;
+    uint32_t display_rs_bad;
+    uint32_t display_rs_ok;
+    uint32_t display_rs_corrected;
+    uint32_t display_rs_corrected_bytes;
+    uint32_t display_rs_uncorrectable;
+    uint32_t display_written_packets;
     int lamp_symbol_rate;
     int lamp_guard;
     int lamp_fec;
@@ -2492,20 +2568,56 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     int lamp_output;
     uint32_t update_seq;
     time_t updated_unix;
+    int current_locked;
+    int held_locked;
 
     if (status == NULL) {
         return;
     }
 
-    pe = rs_uncorrectable + v->transport_errors + v->cc_errors + v->sync_bad;
-    locked = v->packets > 0u &&
-        v->sync_bad == 0u &&
-        v->transport_errors == 0u &&
-        v->cc_errors == 0u &&
-        rs_uncorrectable == 0u &&
-        v->pat_packets > 0u &&
-        v->pmt_packets > 0u;
-    sqi = locked ? status_sqi(v, rs_uncorrectable) : 0u;
+    updated_unix = time(NULL);
+
+    if (status->live_mode) {
+        live_status_snapshot_update(v,
+                                    updated_unix,
+                                    rs_bad,
+                                    rs_ok,
+                                    rs_corrected,
+                                    rs_corrected_bytes,
+                                    rs_uncorrectable,
+                                    written_packets);
+    }
+
+    display_v = v;
+    display_rs_bad = rs_bad;
+    display_rs_ok = rs_ok;
+    display_rs_corrected = rs_corrected;
+    display_rs_corrected_bytes = rs_corrected_bytes;
+    display_rs_uncorrectable = rs_uncorrectable;
+    display_written_packets = written_packets;
+    if (status->live_mode &&
+        live_status_snapshot.valid &&
+        !status_validator_has_useful_data(v, rs_ok, written_packets)) {
+        display_v = &live_status_snapshot.validator;
+        display_rs_bad = live_status_snapshot.rs_bad;
+        display_rs_ok = live_status_snapshot.rs_ok;
+        display_rs_corrected = live_status_snapshot.rs_corrected;
+        display_rs_corrected_bytes = live_status_snapshot.rs_corrected_bytes;
+        display_rs_uncorrectable = live_status_snapshot.rs_uncorrectable;
+        display_written_packets = live_status_snapshot.written_packets;
+    }
+
+    current_locked = status_validator_has_program(v) &&
+        (lock_state == RX_LOCK_LOCKED ||
+         (stdout_enabled && lock_state == RX_LOCK_DEGRADED));
+    held_locked = status->live_mode &&
+        live_status_snapshot.valid &&
+        status_validator_has_program(&live_status_snapshot.validator) &&
+        updated_unix >= live_status_snapshot.updated_unix &&
+        updated_unix - live_status_snapshot.updated_unix <= STATUS_LIVE_HOLD_SECONDS;
+    pe = display_rs_uncorrectable + display_v->transport_errors + display_v->cc_errors + display_v->sync_bad;
+    locked = current_locked || held_locked;
+    sqi = status_sqi(display_v, display_rs_uncorrectable);
     lock_quality = locked ? 100u : status->lock_quality;
     if (lock_quality > 100u) {
         lock_quality = 100u;
@@ -2515,24 +2627,23 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     lamp_guard = status->guard_interval != NULL && strcmp(status->guard_interval, "unknown") != 0;
     lamp_fec = status->fec != NULL && strcmp(status->fec, "unknown") != 0 && strcmp(status->fec, "auto") != 0;
     lamp_ofdm_sync = isfinite(status->pilot_lock) && status->pilot_lock >= 0.45;
-    lamp_inner_fec = (rs_ok + rs_bad + rs_uncorrectable) > 0u;
-    lamp_rs_lock = rs_ok > 0u;
-    lamp_rs_clean = rs_ok > 0u && rs_uncorrectable == 0u;
-    lamp_ts_sync = v->packets > 0u && v->sync_bad == 0u;
-    lamp_pat = v->pat_packets > 0u;
-    lamp_pmt = v->pmt_packets > 0u;
-    lamp_sdt = v->sdt_packets > 0u;
-    lamp_service = v->service_id != 0u || v->service_name[0] != '\0';
-    lamp_av = v->video_pid != 0x1fffu || v->audio_pid != 0x1fffu;
-    lamp_output = written_packets > 0u || stdout_enabled;
+    lamp_inner_fec = (display_rs_ok + display_rs_bad + display_rs_uncorrectable) > 0u;
+    lamp_rs_lock = display_rs_ok > 0u;
+    lamp_rs_clean = display_rs_ok > 0u && display_rs_uncorrectable == 0u;
+    lamp_ts_sync = display_v->packets > 0u && display_v->sync_bad == 0u;
+    lamp_pat = display_v->pat_packets > 0u;
+    lamp_pmt = display_v->pmt_packets > 0u;
+    lamp_sdt = display_v->sdt_packets > 0u;
+    lamp_service = display_v->service_id != 0u || display_v->service_name[0] != '\0';
+    lamp_av = display_v->video_pid != 0x1fffu || display_v->audio_pid != 0x1fffu;
+    lamp_output = display_written_packets > 0u || stdout_enabled;
     update_seq = next_status_update_seq++;
-    updated_unix = time(NULL);
 
     gui_status_submit(status,
-                      v,
-                      rs_ok,
-                      rs_uncorrectable,
-                      written_packets,
+                      display_v,
+                      display_rs_ok,
+                      display_rs_uncorrectable,
+                      display_written_packets,
                       lamp_ofdm_sync,
                       lamp_rs_lock,
                       (lamp_pat && lamp_pmt) || lamp_sdt || lamp_service);
@@ -2589,10 +2700,10 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     fprintf(f, "  \"afc_trend_count\": %u,\n", status->afc_trend_count);
     fprintf(f, "  \"symbol_phase\": %d,\n", status->symbol_phase);
     fprintf(f, "  \"pe\": %u,\n", pe);
-    fprintf(f, "  \"service_id\": %u,\n", v->service_id);
-    fprintf(f, "  \"program_id\": %u,\n", v->program_id);
+    fprintf(f, "  \"service_id\": %u,\n", display_v->service_id);
+    fprintf(f, "  \"program_id\": %u,\n", display_v->program_id);
     fprintf(f, "  \"service_name\": \"");
-    for (const char *p = v->service_name; *p != '\0'; ++p) {
+    for (const char *p = display_v->service_name; *p != '\0'; ++p) {
         if (*p == '"' || *p == '\\') {
             fputc('\\', f);
         }
@@ -2600,25 +2711,25 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     }
     fprintf(f, "\",\n");
     fprintf(f, "  \"service_provider\": \"");
-    for (const char *p = v->service_provider; *p != '\0'; ++p) {
+    for (const char *p = display_v->service_provider; *p != '\0'; ++p) {
         if (*p == '"' || *p == '\\') {
             fputc('\\', f);
         }
         fputc(*p, f);
     }
     fprintf(f, "\",\n");
-    fprintf(f, "  \"packets\": %u,\n", v->packets);
-    fprintf(f, "  \"written_packets\": %u,\n", written_packets);
-    fprintf(f, "  \"sync_bad\": %u,\n", v->sync_bad);
-    fprintf(f, "  \"transport_errors\": %u,\n", v->transport_errors);
-    fprintf(f, "  \"cc_errors\": %u,\n", v->cc_errors);
-    fprintf(f, "  \"pat_packets\": %u,\n", v->pat_packets);
-    fprintf(f, "  \"pmt_packets\": %u,\n", v->pmt_packets);
-    fprintf(f, "  \"sdt_packets\": %u,\n", v->sdt_packets);
-    fprintf(f, "  \"pmt_pid\": %u,\n", v->pmt_pid == 0x1fffu ? 8191u : v->pmt_pid);
-    fprintf(f, "  \"pcr_pid\": %u,\n", v->pcr_pid == 0x1fffu ? 8191u : v->pcr_pid);
-    fprintf(f, "  \"video_pid\": %u,\n", v->video_pid == 0x1fffu ? 8191u : v->video_pid);
-    fprintf(f, "  \"audio_pid\": %u,\n", v->audio_pid == 0x1fffu ? 8191u : v->audio_pid);
+    fprintf(f, "  \"packets\": %u,\n", display_v->packets);
+    fprintf(f, "  \"written_packets\": %u,\n", display_written_packets);
+    fprintf(f, "  \"sync_bad\": %u,\n", display_v->sync_bad);
+    fprintf(f, "  \"transport_errors\": %u,\n", display_v->transport_errors);
+    fprintf(f, "  \"cc_errors\": %u,\n", display_v->cc_errors);
+    fprintf(f, "  \"pat_packets\": %u,\n", display_v->pat_packets);
+    fprintf(f, "  \"pmt_packets\": %u,\n", display_v->pmt_packets);
+    fprintf(f, "  \"sdt_packets\": %u,\n", display_v->sdt_packets);
+    fprintf(f, "  \"pmt_pid\": %u,\n", display_v->pmt_pid == 0x1fffu ? 8191u : display_v->pmt_pid);
+    fprintf(f, "  \"pcr_pid\": %u,\n", display_v->pcr_pid == 0x1fffu ? 8191u : display_v->pcr_pid);
+    fprintf(f, "  \"video_pid\": %u,\n", display_v->video_pid == 0x1fffu ? 8191u : display_v->video_pid);
+    fprintf(f, "  \"audio_pid\": %u,\n", display_v->audio_pid == 0x1fffu ? 8191u : display_v->audio_pid);
     fprintf(f, "  \"stdout_enabled\": %s,\n", stdout_enabled ? "true" : "false");
     fprintf(f, "  \"waiting_for_video_start\": %s,\n", waiting_for_video_start ? "true" : "false");
     fprintf(f, "  \"lamp_symbol_rate\": %s,\n", lamp_symbol_rate ? "true" : "false");
@@ -2635,11 +2746,11 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     fprintf(f, "  \"lamp_service\": %s,\n", lamp_service ? "true" : "false");
     fprintf(f, "  \"lamp_av\": %s,\n", lamp_av ? "true" : "false");
     fprintf(f, "  \"lamp_output\": %s,\n", lamp_output ? "true" : "false");
-    fprintf(f, "  \"rs_ok\": %u,\n", rs_ok);
-    fprintf(f, "  \"rs_bad\": %u,\n", rs_bad);
-    fprintf(f, "  \"rs_corrected\": %u,\n", rs_corrected);
-    fprintf(f, "  \"rs_corrected_bytes\": %u,\n", rs_corrected_bytes);
-    fprintf(f, "  \"rs_uncorrectable\": %u\n", rs_uncorrectable);
+    fprintf(f, "  \"rs_ok\": %u,\n", display_rs_ok);
+    fprintf(f, "  \"rs_bad\": %u,\n", display_rs_bad);
+    fprintf(f, "  \"rs_corrected\": %u,\n", display_rs_corrected);
+    fprintf(f, "  \"rs_corrected_bytes\": %u,\n", display_rs_corrected_bytes);
+    fprintf(f, "  \"rs_uncorrectable\": %u\n", display_rs_uncorrectable);
     fprintf(f, "}\n");
     if (fclose(f) != 0) {
         fprintf(stderr, "failed to close status JSON output: %s\n", tmp_path);

@@ -84,6 +84,17 @@ Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:
 LOGLEVEL=info tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
+Het startscript bewaakt de receiverstatus. Nadat er eenmaal lock is geweest,
+stopt het de RTL-SDR, receiver en ffmpeg pipeline wanneer `locked` langer dan
+15 seconden false blijft of wanneer de status-JSON langer dan 10 seconden niet
+meer wordt bijgewerkt. Daarmee valt de SRT-verbinding weg in plaats van dat het
+laatste ontvangen beeld blijft staan. De user-service start daarna opnieuw door
+`Restart=on-failure`.
+
+```sh
+LOCK_LOSS_TIMEOUT=20 STATUS_STALE_TIMEOUT=15 tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
 ## User systemd service
 
 Het bestand `dvbt-rx.service` is bedoeld voor een user-service en gaat uit van
