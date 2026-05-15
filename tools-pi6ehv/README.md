@@ -57,10 +57,36 @@ GI:          1/32
 FEC:         2/3
 Status JSON: /var/www/html/dvb/dvbt-rx-status.json
 SRT:         srt://44.137.26.85:4001?mode=caller&latency=500000
+Loglevel:    quiet
 ```
 
 Voor een andere ffmpeg binary:
 
 ```sh
 FFMPEG=../ffmpeg/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:
+
+```sh
+LOGLEVEL=info tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+## User systemd service
+
+Het bestand `dvbt-rx.service` is bedoeld voor een user-service en gaat uit van
+een clone in `~/dvbt-rx`.
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp tools-pi6ehv/dvbt-rx.service ~/.config/systemd/user/dvbt-rx.service
+systemctl --user daemon-reload
+systemctl --user enable --now dvbt-rx.service
+```
+
+Status en logs:
+
+```sh
+systemctl --user status dvbt-rx.service
+journalctl --user -u dvbt-rx.service -f
 ```

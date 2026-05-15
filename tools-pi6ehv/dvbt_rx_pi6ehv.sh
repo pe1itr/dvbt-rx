@@ -20,7 +20,7 @@ live_symbols="${LIVE_SYMBOLS:-64}"
 probe_symbols="${PROBE_SYMBOLS:-64}"
 input_format="${INPUT_FORMAT:-u8}"
 status_json="${STATUS_JSON:-/var/www/html/dvb/dvbt-rx-status.json}"
-loglevel="${LOGLEVEL:-info}"
+loglevel="${LOGLEVEL:-quiet}"
 session="${SESSION:-$(date +%Y%m%d_%H%M%S)}"
 log_dir="${LOG_DIR:-${repo_dir}/logs}"
 rxlog="${RXLOG:-${log_dir}/rx_${session}.log}"
@@ -50,6 +50,7 @@ Environment:
   RBDVBT_RX       receiver path. Default: ${build_dir}/rbdvbt_rx
   BUILD_DIR       build directory. Default: ${build_dir}
   STATUS_JSON     receiver status JSON. Default: ${status_json}
+  LOGLEVEL        receiver loglevel. Default: ${loglevel}
   LOG_DIR         log directory. Default: ${log_dir}
   RXLOG           receiver log path. Default: ${rxlog}
   GUI             pass --gui to rbdvbt_rx when set to 1. Default: 0

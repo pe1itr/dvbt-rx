@@ -1,0 +1,14 @@
+[Unit]
+Description=PI6EHV RB-DVB-T RTL-SDR receiver to SRT
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dvbt-rx
+ExecStart=%h/dvbt-rx/tools-pi6ehv/dvbt_rx_pi6ehv.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
