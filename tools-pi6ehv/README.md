@@ -88,6 +88,8 @@ LOGLEVEL=info tools-pi6ehv/dvbt_rx_pi6ehv.sh
 
 Het bestand `dvbt-rx.service` is bedoeld voor een user-service en gaat uit van
 een clone in `~/dvbt-rx`.
+De service start niet wanneer `nicam-rx.service` actief is, omdat beide services
+dezelfde RTL-SDR ontvanger gebruiken.
 
 ```sh
 mkdir -p ~/.config/systemd/user

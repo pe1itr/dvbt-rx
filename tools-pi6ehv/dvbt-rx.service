@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/dvbt-rx
+ExecStartPre=/bin/sh -c '! systemctl --user is-active --quiet nicam-rx.service'
 ExecStart=%h/dvbt-rx/tools-pi6ehv/dvbt_rx_pi6ehv.sh
 Restart=on-failure
 RestartSec=5
