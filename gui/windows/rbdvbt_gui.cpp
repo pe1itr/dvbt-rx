@@ -4,6 +4,9 @@
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QHash>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QJsonValue>
 #include <QtCore/QProcess>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
@@ -157,7 +160,7 @@ struct Settings {
     QString symbolRate = "250000";
     QString guard = "1/32";
     QString fec = "2/3";
-    QString loglevel = "info";
+    QString loglevel = "quiet";
 };
 
 class ConfigDialog : public QDialog {
@@ -619,8 +622,12 @@ private:
         ofdmLocked_ = false;
         lastPilotLock_ = -1.0;
         lastSnrText_ = "-";
+        lastStatusUpdate_ = -1;
         lastServiceName_.clear();
         lastProviderName_.clear();
+        decoderStatusJsonPath_ = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+            .filePath(QString("rbdvbt_gui_status_%1.json").arg(QCoreApplication::applicationPid()));
+        QFile::remove(decoderStatusJsonPath_);
         lastRtlData_ = QDateTime();
         lastTsData_ = QDateTime();
         startTime_ = QDateTime::currentDateTime();
@@ -664,7 +671,9 @@ private:
         decoderArgs_ = {"--stdin", "--live", "--resample-to-dvbt-rate",
                         "--input-format", settings_.inputFormat, "--sample-rate", settings_.rtlSampleRate,
                         "--sr", settings_.symbolRate, "--gi", settings_.guard, "--fec", settings_.fec,
-                        "--udp-out", kUdpTsOut, "--wait-video-start", "--loglevel", settings_.loglevel};
+                        "--udp-out", kUdpTsOut, "--wait-video-start",
+                        "--status-json", decoderStatusJsonPath_,
+                        "--loglevel", settings_.loglevel};
         vlcCommand_ = report.vlcPath;
         const quintptr hwnd = quintptr(videoWidget_->winId());
         vlcArgs_ = {"--drawable-hwnd", QString::number(hwnd),
@@ -873,6 +882,78 @@ private:
         }
     }
 
+    static QString jsonString(const QJsonObject &obj, const char *key)
+    {
+        const QJsonValue value = obj.value(QLatin1String(key));
+        return value.isString() ? value.toString().trimmed() : QString();
+    }
+
+    static double jsonNumber(const QJsonObject &obj, const char *key, bool *ok)
+    {
+        const QJsonValue value = obj.value(QLatin1String(key));
+        if (value.isDouble()) {
+            if (ok)
+                *ok = true;
+            return value.toDouble();
+        }
+        if (ok)
+            *ok = false;
+        return 0.0;
+    }
+
+    void updateSignalStatusFromJson()
+    {
+        if (decoderStatusJsonPath_.isEmpty())
+            return;
+        QFile file(decoderStatusJsonPath_);
+        if (!file.open(QIODevice::ReadOnly))
+            return;
+        const QByteArray bytes = file.readAll();
+        if (bytes.isEmpty())
+            return;
+
+        QJsonParseError error;
+        const QJsonDocument doc = QJsonDocument::fromJson(bytes, &error);
+        if (error.error != QJsonParseError::NoError || !doc.isObject())
+            return;
+        const QJsonObject obj = doc.object();
+
+        const int update = obj.value("status_update").toInt(-1);
+        if (update >= 0 && update == lastStatusUpdate_)
+            return;
+        lastStatusUpdate_ = update;
+
+        ofdmLocked_ = obj.value("lamp_ofdm_sync").toBool(obj.value("locked").toBool(false));
+
+        bool pilotOk = false;
+        const double pilot = jsonNumber(obj, "pilot_lock", &pilotOk);
+        if (pilotOk)
+            lastPilotLock_ = pilot;
+
+        bool snrOk = false;
+        double snr = jsonNumber(obj, "snr", &snrOk);
+        if (!snrOk)
+            snr = jsonNumber(obj, "snr_db", &snrOk);
+        if (snrOk)
+            lastSnrText_ = QString::number(snr, 'f', 2) + " dB";
+
+        const QString service = jsonString(obj, "service_name");
+        const QString provider = jsonString(obj, "service_provider");
+        if (!service.isEmpty())
+            lastServiceName_ = service;
+        if (!provider.isEmpty())
+            lastProviderName_ = provider;
+
+        bool writtenOk = false;
+        const double writtenPackets = jsonNumber(obj, "written_packets", &writtenOk);
+        if (writtenOk && writtenPackets > 0.0) {
+            const qint64 jsonTsBytes = (qint64)writtenPackets * 188;
+            if (jsonTsBytes > tsBytes_)
+                tsBytes_ = jsonTsBytes;
+            lastTsData_ = QDateTime::currentDateTime();
+        }
+    }
+
     void forwardRtlToDecoder()
     {
         if (!rtlProcess_)
@@ -895,6 +976,8 @@ private:
 
     void updateStatus()
     {
+        updateSignalStatusFromJson();
+
         if (settings_.inputMode == "file")
             fillInputFileRow();
         else
@@ -1096,6 +1179,8 @@ private:
     QDateTime lastRtlData_;
     QDateTime lastTsData_;
     QDateTime startTime_;
+    QString decoderStatusJsonPath_;
+    int lastStatusUpdate_ = -1;
     QString rtlCommand_;
     QString decoderCommand_;
     QString vlcCommand_;

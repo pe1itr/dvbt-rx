@@ -72,7 +72,7 @@ terug zolang de ontvangst loopt.
 ```bat
 cd /d C:\HamRadio\rbdvbt_gui-windows-x64-0.1.2
 start "" "C:\Program Files\VideoLAN\VLC\vlc.exe" udp://@:10000
-rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --loglevel info
+rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --status-json rx_status.json --loglevel quiet
 ```
 
 De GUI voert dezelfde pipeline uit zonder batchfile en zonder shell-pipe, en
@@ -88,7 +88,7 @@ start VLC zelf met `udp://@:10000`.
    - symbol rate: `250000`
    - guard interval: `1/32`
    - FEC: `2/3`
-   - loglevel: `info`
+   - loglevel: `quiet`
 3. Open `Configuratie` als de paden naar `rtl_sdr.exe`, `rbdvbt_rx.exe` of
    `vlc.exe` niet automatisch gevonden zijn.
 4. Klik `Check installatie`.
@@ -96,8 +96,9 @@ start VLC zelf met `udp://@:10000`.
 6. Klik `STOP` om VLC, decoder en RTL-SDR in die volgorde te stoppen.
 
 De video wordt in het hoofdvenster embedded via VLC `--drawable-hwnd`.
-Het statuspaneel toont live OFDM lock, SNR, service name en provider name op
-basis van de decoderlog.
+Het statuspaneel toont live OFDM lock, SNR, service name en provider name uit
+de decoderstatus-JSON. Het decoder-loglevel bepaalt alleen hoeveel tekst in de
+logtabs verschijnt; ook met `quiet` blijft de actuele status zichtbaar.
 
 ### IQ-bestand afspelen
 

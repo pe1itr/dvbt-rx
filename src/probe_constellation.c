@@ -7010,13 +7010,16 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                                      cfo_hz);
         }
 
-	        if (cfg->live_mode) {
-	            if (avg_pilot_lock < LIVE_METADATA_PILOT_LOCK_MIN) {
-                    live_health_note_low_pilot();
-	                fprintf(stderr,
-	                        "[dvbt2k] dropping low-pilot live chunk avg_pilot_lock=%.5f snr=%.2fdB; resetting inner continuity\n",
-	                        avg_pilot_lock,
-                        snr_db);
+        if (cfg->live_mode) {
+            if (avg_pilot_lock < LIVE_METADATA_PILOT_LOCK_MIN) {
+                live_health_note_low_pilot();
+                rbdvbt_status_publish_idle(&status, "pilot-drop", status.input_samples);
+                if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                    fprintf(stderr,
+                            "[dvbt2k] dropping low-pilot live chunk avg_pilot_lock=%.5f snr=%.2fdB; resetting inner continuity\n",
+                            avg_pilot_lock,
+                            snr_db);
+                }
                 live_symbol_continuity_ok = 0;
                 live_soft_dibit_fifo.count = 0u;
                 live_soft_dibit_fifo.symbol_count = 0u;

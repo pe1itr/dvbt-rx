@@ -2641,6 +2641,9 @@ static void status_write_json(const rbdvbt_status_context_t *status,
         fprintf(stderr, "failed to close status JSON output: %s\n", tmp_path);
         return;
     }
+#ifdef _WIN32
+    remove(status->status_json_path);
+#endif
     if (rename(tmp_path, status->status_json_path) != 0) {
         fprintf(stderr, "failed to publish status JSON output: %s\n", status->status_json_path);
     }
