@@ -60,10 +60,22 @@ SRT:         srt://44.137.26.85:4001?mode=caller&latency=500000
 Loglevel:    quiet
 ```
 
+Standaard gebruikt het script de PI6EHV ffmpeg met SRT support naast de repo:
+
+```text
+../ffmpeg/ffmpeg
+```
+
+Deze ffmpeg moet SRT ondersteunen. Controleer dat met:
+
+```sh
+../ffmpeg/ffmpeg -hide_banner -protocols | grep '^  srt$'
+```
+
 Voor een andere ffmpeg binary:
 
 ```sh
-FFMPEG=../ffmpeg/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
+FFMPEG=/pad/naar/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
 Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:

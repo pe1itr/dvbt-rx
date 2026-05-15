@@ -7,7 +7,7 @@ repo_dir="$(CDPATH= cd -- "${script_dir}/.." && pwd)"
 build_dir="${BUILD_DIR:-${repo_dir}/build}"
 rbdvbt_rx="${RBDVBT_RX:-${build_dir}/rbdvbt_rx}"
 rtl_sdr_bin="${RTL_SDR:-rtl_sdr}"
-ffmpeg_bin="${FFMPEG:-ffmpeg}"
+ffmpeg_bin="${FFMPEG:-${repo_dir}/../ffmpeg/ffmpeg}"
 
 frequency="${FREQUENCY:-436000000}"
 device="${RTL_DEVICE:-00000001}"
@@ -25,7 +25,9 @@ session="${SESSION:-$(date +%Y%m%d_%H%M%S)}"
 log_dir="${LOG_DIR:-${repo_dir}/logs}"
 rxlog="${RXLOG:-${log_dir}/rx_${session}.log}"
 srt_url="${SRT_URL:-srt://44.137.26.85:4001?mode=caller&latency=500000}"
-ffmpeg_loglevel="${FFMPEG_LOGLEVEL:-warning}"
+ffmpeg_loglevel="${FFMPEG_LOGLEVEL:-error}"
+ffmpeg_probesize="${FFMPEG_PROBESIZE:-2000000}"
+ffmpeg_analyzeduration="${FFMPEG_ANALYZEDURATION:-2000000}"
 video_start="${WAIT_VIDEO_START:-1}"
 enable_gui="${GUI:-0}"
 udp_out="${UDP_OUT:-}"
@@ -45,7 +47,7 @@ Environment:
   GI              DVB-T guard interval. Default: ${gi}
   FEC             DVB-T FEC. Default: ${fec}
   SRT_URL         Destination URL. Default: ${srt_url}
-  FFMPEG          ffmpeg binary path. Default: ffmpeg
+  FFMPEG          ffmpeg binary path. Default: ${ffmpeg_bin}
   RTL_SDR         rtl_sdr binary path. Default: rtl_sdr
   RBDVBT_RX       receiver path. Default: ${build_dir}/rbdvbt_rx
   BUILD_DIR       build directory. Default: ${build_dir}
@@ -53,6 +55,7 @@ Environment:
   LOGLEVEL        receiver loglevel. Default: ${loglevel}
   LOG_DIR         log directory. Default: ${log_dir}
   RXLOG           receiver log path. Default: ${rxlog}
+  FFMPEG_LOGLEVEL ffmpeg loglevel. Default: ${ffmpeg_loglevel}
   GUI             pass --gui to rbdvbt_rx when set to 1. Default: 0
   UDP_OUT         optional extra UDP TS output, for example 127.0.0.1:10000
   WAIT_VIDEO_START wait for a clean video start when set to 1. Default: 1
@@ -81,6 +84,11 @@ if ! command -v "${rtl_sdr_bin}" >/dev/null 2>&1; then
 fi
 if ! command -v "${ffmpeg_bin}" >/dev/null 2>&1; then
     printf "ffmpeg not found: %s\n" "${ffmpeg_bin}" >&2
+    exit 1
+fi
+if ! "${ffmpeg_bin}" -hide_banner -protocols 2>/dev/null | awk '$1 == "srt" { found = 1 } END { exit found ? 0 : 1 }'; then
+    printf "ffmpeg has no SRT protocol support: %s\n" "${ffmpeg_bin}" >&2
+    printf "Install an ffmpeg build with libsrt support or set FFMPEG=/path/to/ffmpeg-with-srt.\n" >&2
     exit 1
 fi
 
@@ -125,6 +133,8 @@ printf "  Status:    %s\n" "${status_json}" >&2
         -hide_banner \
         -loglevel "${ffmpeg_loglevel}" \
         -f mpegts \
+        -probesize "${ffmpeg_probesize}" \
+        -analyzeduration "${ffmpeg_analyzeduration}" \
         -i pipe:0 \
         -c copy \
         -f mpegts \
