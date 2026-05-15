@@ -4498,7 +4498,7 @@ typedef struct {
 typedef struct {
     int valid;
     rbdvbt_fec_t fec;
-    double metrics[128];
+    float metrics[128];
 } live_viterbi_state_t;
 
 static live_viterbi_state_t live_viterbi_state;
@@ -4506,7 +4506,7 @@ static live_viterbi_state_t live_viterbi_state;
 typedef struct {
     int valid;
     rbdvbt_fec_t fec;
-    double metrics[128];
+    float metrics[128];
     uint8_t *history;
     size_t history_len;
     uint64_t steps;
@@ -4533,6 +4533,10 @@ static live_soft_dibit_fifo_t live_soft_dibit_fifo;
 #define LIVE_DECODE_WINDOW_SYMBOLS 256u
 #define LIVE_VITERBI_CONSUME_SYMBOLS 64u
 #define VITERBI_STATE_COUNT 64u
+
+static uint8_t viterbi_prev_state_table[VITERBI_STATE_COUNT][2];
+static uint8_t viterbi_expected_table[VITERBI_STATE_COUNT][2];
+static int viterbi_tables_ready;
 
 typedef struct live_decode_job {
     rbdvbt_fec_t fec;
@@ -5055,6 +5059,23 @@ static uint8_t dvbt_conv_parity_for_state(uint8_t state)
     return parity;
 }
 
+static void viterbi_init_tables(void)
+{
+    if (viterbi_tables_ready) {
+        return;
+    }
+
+    for (uint32_t next_state = 0; next_state < VITERBI_STATE_COUNT; ++next_state) {
+        for (uint32_t pred = 0; pred < 2u; ++pred) {
+            uint8_t reg = (uint8_t)((next_state << 1) | pred);
+
+            viterbi_prev_state_table[next_state][pred] = (uint8_t)(reg & 0x3fu);
+            viterbi_expected_table[next_state][pred] = dvbt_conv_parity_for_state(reg);
+        }
+    }
+    viterbi_tables_ready = 1;
+}
+
 static void depuncture_pair_set(viterbi_pair_t *pair,
                                 int has_x,
                                 uint8_t x,
@@ -5170,14 +5191,14 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
                                             size_t *out_pair_count,
                                             double *out_best_metric)
 {
-    const double inf = 1.0e100;
+    const float inf = 1.0e30f;
     viterbi_pair_t *pairs = NULL;
     uint8_t *out = NULL;
     size_t out_count = 0u;
     size_t out_cap = 0u;
     size_t pair_count;
     size_t traceback_bits = (size_t)viterbi_traceback_bytes(fec) * 8u;
-    double best_metric = 0.0;
+    float best_metric = 0.0f;
     int rc = -1;
 
     *out_bytes = NULL;
@@ -5195,6 +5216,7 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
             goto done;
         }
     }
+    viterbi_init_tables();
 
     pair_count = dvbt_depuncture_dibits(fec, dibits, dibit_count, &pairs);
     if (pair_count == 0u || pairs == NULL) {
@@ -5206,46 +5228,39 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
     }
 
     for (size_t t = 0; t < pair_count; ++t) {
-        double next_metrics[VITERBI_STATE_COUNT];
-        double step_best = inf;
+        const viterbi_pair_t *pair = &pairs[t];
+        float next_metrics[VITERBI_STATE_COUNT];
+        float step_best = inf;
         int best_state = 0;
         uint8_t *history_row = &live_viterbi_stream.history[(live_viterbi_stream.steps % traceback_bits) * VITERBI_STATE_COUNT];
 
-        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-            next_metrics[s] = inf;
-            history_row[s] = 0u;
-        }
+        for (uint32_t next_state = 0; next_state < VITERBI_STATE_COUNT; ++next_state) {
+            uint8_t prev0 = viterbi_prev_state_table[next_state][0];
+            uint8_t prev1 = viterbi_prev_state_table[next_state][1];
+            uint8_t exp0 = viterbi_expected_table[next_state][0];
+            uint8_t exp1 = viterbi_expected_table[next_state][1];
+            float metric0 = live_viterbi_stream.metrics[prev0];
+            float metric1 = live_viterbi_stream.metrics[prev1];
 
-        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-            if (live_viterbi_stream.metrics[s] >= inf) {
-                continue;
+            if (pair->has_x) {
+                metric0 += pair->x_cost[exp0 & 1u];
+                metric1 += pair->x_cost[exp1 & 1u];
             }
-            for (int bit = 0; bit <= 1; ++bit) {
-                uint8_t reg = (uint8_t)(((uint8_t)bit << 6) | (uint8_t)s);
-                uint8_t next_state = (uint8_t)(reg >> 1);
-                uint8_t expected = dvbt_conv_parity_for_state(reg);
-                double branch = 0.0;
-                double metric;
-
-                if (pairs[t].has_x) {
-                    branch += pairs[t].x_cost[expected & 1u];
-                }
-                if (pairs[t].has_y) {
-                    branch += pairs[t].y_cost[(expected >> 1) & 1u];
-                }
-
-                metric = live_viterbi_stream.metrics[s] + branch;
-                if (metric < next_metrics[next_state]) {
-                    next_metrics[next_state] = metric;
-                    history_row[next_state] = (uint8_t)s;
-                }
+            if (pair->has_y) {
+                metric0 += pair->y_cost[(exp0 >> 1) & 1u];
+                metric1 += pair->y_cost[(exp1 >> 1) & 1u];
             }
-        }
 
-        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-            if (next_metrics[s] < step_best) {
-                step_best = next_metrics[s];
-                best_state = (int)s;
+            if (metric0 <= metric1) {
+                next_metrics[next_state] = metric0;
+                history_row[next_state] = prev0;
+            } else {
+                next_metrics[next_state] = metric1;
+                history_row[next_state] = prev1;
+            }
+            if (next_metrics[next_state] < step_best) {
+                step_best = next_metrics[next_state];
+                best_state = (int)next_state;
             }
         }
         if (step_best >= inf) {
@@ -5279,7 +5294,7 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
     *out_bytes = out;
     *out_byte_count = out_count;
     if (out_best_metric != NULL) {
-        *out_best_metric = best_metric;
+        *out_best_metric = (double)best_metric;
     }
     out = NULL;
     rc = 0;
@@ -5719,7 +5734,9 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
                 live_viterbi_stream_reset();
                 live_viterbi_state.valid = 0;
             } else if (rc == 0) {
-                memcpy(live_viterbi_state.metrics, final_metrics, sizeof(final_metrics));
+                for (uint32_t s = 0; s < 128u; ++s) {
+                    live_viterbi_state.metrics[s] = (float)final_metrics[s];
+                }
                 live_viterbi_state.fec = fec;
                 live_viterbi_state.valid = 1;
             } else {
