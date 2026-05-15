@@ -36,6 +36,8 @@ sudo cp tools-pi6ehv/dvbt-rx-status.html /var/www/html/dvbt-rx-status.html
 
 Zorg dat de gebruiker die `rbdvbt_rx` draait mag schrijven in
 `/var/www/html/dvb`.
+De webpagina toont `Ontvanger offline` wanneer het JSON-bestand ontbreekt of
+wanneer de `updated_unix` timestamp meer dan 10 seconden oud is.
 
 ## Ontvanger starten
 

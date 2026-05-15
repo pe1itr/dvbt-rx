@@ -365,6 +365,7 @@
   <script>
     const statusUrl = "dvb/dvbt-rx-status.json";
     const refreshMs = 1000;
+    const offlineAfterSeconds = 10;
     const ids = {};
     const lampFields = [
       ["lamp_symbol_rate", "Symbolrate"],
@@ -425,20 +426,27 @@
       ids[id].textContent = value;
     }
 
+    function isOffline(data) {
+      if (!data.updated_unix) {
+        return true;
+      }
+      return Date.now() / 1000 - Number(data.updated_unix) > offlineAfterSeconds;
+    }
+
     function setState(data) {
-      const stale = data.updated_unix && (Date.now() / 1000 - Number(data.updated_unix)) > 5;
+      const offline = isOffline(data);
       const ok = data.locked === true;
       let cls = "state";
       let text = "Geen lock";
 
-      if (ok) {
+      if (offline) {
+        cls += " bad";
+        text = "Ontvanger offline";
+      } else if (ok) {
         cls += " ok";
         text = "Locked";
-      } else if (stale) {
-        cls += " warn";
-        text = "Oud";
       } else if (data.stage) {
-        cls += " bad";
+        cls += " warn";
       }
 
       ids.locked.innerHTML = `<span class="${cls}">${text}</span>`;
@@ -503,8 +511,9 @@
         }
         render(await response.json());
       } catch (err) {
-        ids.updated.textContent = `Geen JSON: ${err.message}`;
-        ids.locked.innerHTML = '<span class="state warn">Wachten</span>';
+        ids.updated.textContent = `Geen statusbestand: ${err.message}`;
+        ids.locked.innerHTML = '<span class="state bad">Ontvanger offline</span>';
+        ids.stage.textContent = "stage: receiver niet actief of webpad onbereikbaar";
       }
     }
 
