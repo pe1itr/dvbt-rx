@@ -270,6 +270,8 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             cfg->wait_video_start = 1;
         } else if (strcmp(arg, "--status-json") == 0 && i + 1 < argc) {
             cfg->status_json = argv[++i];
+        } else if (strcmp(arg, "--visualizer-udp") == 0 && i + 1 < argc) {
+            cfg->visualizer_udp = argv[++i];
         } else if (strcmp(arg, "--status-period-packets") == 0 && i + 1 < argc) {
             if (parse_u32(argv[++i], &cfg->status_period_packets) != 0 || cfg->status_period_packets == 0) {
                 fprintf(stderr, "invalid --status-period-packets value\n");
@@ -409,6 +411,7 @@ void rbdvbt_print_info(const char *argv0)
     printf("  --live-symbols N                 OFDM symbols per live frontend chunk\n");
     printf("  --afc, --no-afc                  Enable or disable live carrier-bin AFC, default off\n");
     printf("  --gui                            Show constellation, FIFO, spectrum, and status windows\n\n");
+    printf("  --visualizer-udp IPv4:PORT       Send binary spectrum/constellation frames for an external GUI\n\n");
     printf("Diagnostics and files:\n");
     printf("  --loglevel quiet|error|warn|info|debug|trace\n");
     printf("  --constellation-out FILE.csv     Write constellation points\n");

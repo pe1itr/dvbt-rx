@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef RBDVBT_VERSION
-#define RBDVBT_VERSION "0.1.1"
+#define RBDVBT_VERSION "0.1.3"
 #endif
 
 typedef enum {
@@ -70,6 +70,7 @@ typedef struct {
     int wait_video_start;
     const char *status_json;
     uint32_t status_period_packets;
+    const char *visualizer_udp;
     const char *spectrum_out;
     const char *spectrum_svg;
     const char *carrier_metrics_out;

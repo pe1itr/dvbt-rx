@@ -70,7 +70,7 @@ Start VLC eerst; de decoder-pipe blijft live draaien en keert normaal niet
 terug zolang de ontvangst loopt.
 
 ```bat
-cd /d C:\HamRadio\rbdvbt_gui-windows-x64-0.1.2
+cd /d C:\HamRadio\rbdvbt_gui-windows-x64-0.1.3
 start "" "C:\Program Files\VideoLAN\VLC\vlc.exe" udp://@:10000
 rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250000 --gi 1/32 --fec 2/3 --udp-out 127.0.0.1:10000 --wait-video-start --status-json rx_status.json --loglevel quiet
 ```
@@ -99,6 +99,10 @@ De video wordt in het hoofdvenster embedded via VLC `--drawable-hwnd`.
 Het statuspaneel toont live OFDM lock, SNR, service name en provider name uit
 de decoderstatus-JSON. Het decoder-loglevel bepaalt alleen hoeveel tekst in de
 logtabs verschijnt; ook met `quiet` blijft de actuele status zichtbaar.
+De GUI zet daarnaast automatisch `--visualizer-udp 127.0.0.1:10001` aan voor
+de decoder en toont de binaire spectrum- en constellatieframes in het
+hoofdvenster. Deze visualizer-uitgang is best-effort; als het GUI-venster niet
+luistert blijft de decoder gewoon doorlopen.
 
 ### IQ-bestand afspelen
 

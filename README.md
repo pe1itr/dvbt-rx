@@ -302,6 +302,11 @@ inkomende IQ-stream. Het spectrumvenster gebruikt de raw IQ-samples aan de
 ingang van de ontvanger; de x-as loopt over de volledige sample-rate span en de
 y-as toont het niveau in dB.
 
+Voor externe launchers, zoals de Windows Qt GUI, is er daarnaast
+`--visualizer-udp IPv4:PORT`. Die optie staat standaard uit en stuurt alleen
+best-effort binaire spectrum- en constellatieframes via UDP; `--gui` blijft de
+Linux/X11 vensterinterface.
+
 ![QPSK constellatie GUI](plots/gui_qpsk_constellation.png)
 
 ![Service status GUI](plots/gui_service_status.png)
@@ -341,6 +346,7 @@ y-as toont het niveau in dB.
 | `--live-symbols N` | Aantal OFDM-symbolen per live frontend chunk. `64` is de geteste standaard voor de huidige Linrad/SDR live pipeline. |
 | `--afc`, `--no-afc` | Zet live AFC aan of uit. AFC staat standaard uit en volgt alleen kleine carrier-bin drift wanneer pilot-lock sterk is of dezelfde drifttrend meerdere chunks zichtbaar blijft. |
 | `--gui` | Toon live constellatie-, FIFO- en input-spectrumvensters wanneer X11 beschikbaar is. Het spectrum wordt gemaakt uit de inkomende IQ-samples, met frequentie op de x-as over de volledige sample-rate span en niveau in dB op de y-as. |
+| `--visualizer-udp IPv4:PORT` | Stuur binaire spectrum- en constellatieframes naar een externe GUI. Dit staat standaard uit en blokkeert de decoder niet. |
 | `--wait-video-start` | Houd TS-output dicht tot PAT/PMT/video-PID bekend zijn en daarna een schoon video-startpunt langskomt. H.264 gebruikt SPS/PPS + IDR; H.265/HEVC gebruikt VPS/SPS/PPS + IDR/CRA. |
 | `--constellation-out FILE.csv` | Schrijf QPSK constellatiepunten. |
 | `--constellation-svg FILE.svg` | Schrijf QPSK constellatie als SVG. |

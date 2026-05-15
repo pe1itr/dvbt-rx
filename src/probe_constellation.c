@@ -3,6 +3,7 @@
 #include "dvbt_2k_model.h"
 #include "dvbt_outer.h"
 #include "iq_input.h"
+#include "visualizer.h"
 
 #include <fftw3.h>
 #include <math.h>
@@ -63,6 +64,9 @@ typedef struct {
 } live_status_hold_t;
 
 static live_status_hold_t live_status_hold;
+static rbdvbt_visualizer_t *visualizer_udp;
+static double visualizer_last_spectrum_time;
+static double visualizer_last_constellation_time;
 
 static void live_status_hold_clear(void)
 {
@@ -1216,6 +1220,138 @@ static void gui_constellation_submit(const complexf_t *points,
     pthread_mutex_unlock(&gui_constellation.mutex);
 }
 
+#define VISUALIZER_SPECTRUM_BINS 512u
+#define VISUALIZER_CONSTELLATION_POINTS 768u
+#define VISUALIZER_MIN_INTERVAL_SECONDS 0.20
+
+static void visualizer_submit_spectrum_iq(const complexf_t *samples,
+                                          size_t sample_count,
+                                          uint32_t sample_rate_hz)
+{
+    static fftwf_complex *fft_in;
+    static fftwf_complex *fft_out;
+    static fftwf_plan plan;
+    static float smooth_db[GUI_SPECTRUM_NFFT];
+    static int have_smooth;
+    float bins[VISUALIZER_SPECTRUM_BINS];
+    double now;
+
+    if (!rbdvbt_visualizer_enabled(visualizer_udp) ||
+        samples == NULL ||
+        sample_count == 0u ||
+        sample_rate_hz == 0u) {
+        return;
+    }
+
+    now = monotonic_seconds();
+    if (visualizer_last_spectrum_time > 0.0 &&
+        now - visualizer_last_spectrum_time < VISUALIZER_MIN_INTERVAL_SECONDS) {
+        return;
+    }
+    visualizer_last_spectrum_time = now;
+
+    if (fft_in == NULL || fft_out == NULL || plan == NULL) {
+        fft_in = fftwf_malloc(sizeof(*fft_in) * GUI_SPECTRUM_NFFT);
+        fft_out = fftwf_malloc(sizeof(*fft_out) * GUI_SPECTRUM_NFFT);
+        if (fft_in == NULL || fft_out == NULL) {
+            return;
+        }
+        plan = fftwf_plan_dft_1d((int)GUI_SPECTRUM_NFFT, fft_in, fft_out, FFTW_FORWARD, FFTW_ESTIMATE);
+        if (plan == NULL) {
+            return;
+        }
+    }
+
+    if (sample_count > GUI_SPECTRUM_NFFT) {
+        samples += sample_count - GUI_SPECTRUM_NFFT;
+        sample_count = GUI_SPECTRUM_NFFT;
+    }
+
+    memset(fft_in, 0, sizeof(*fft_in) * GUI_SPECTRUM_NFFT);
+    for (size_t i = 0u; i < sample_count; ++i) {
+        double w = 0.5 - 0.5 * cos((2.0 * M_PI * (double)i) / (double)(GUI_SPECTRUM_NFFT - 1u));
+
+        fft_in[i][0] = (float)((double)samples[i].re * w);
+        fft_in[i][1] = (float)((double)samples[i].im * w);
+    }
+    fftwf_execute(plan);
+
+    for (size_t x = 0u; x < VISUALIZER_SPECTRUM_BINS; ++x) {
+        size_t start = x * GUI_SPECTRUM_NFFT / VISUALIZER_SPECTRUM_BINS;
+        size_t end = (x + 1u) * GUI_SPECTRUM_NFFT / VISUALIZER_SPECTRUM_BINS;
+        float best_db = -200.0f;
+
+        if (end <= start) {
+            end = start + 1u;
+        }
+        for (size_t j = start; j < end; ++j) {
+            size_t bin = (j + GUI_SPECTRUM_NFFT / 2u) % GUI_SPECTRUM_NFFT;
+            double re = fft_out[bin][0];
+            double im = fft_out[bin][1];
+            double p = (re * re + im * im) /
+                ((double)GUI_SPECTRUM_NFFT * (double)GUI_SPECTRUM_NFFT);
+            float db = (float)(10.0 * log10(p + 1.0e-20));
+
+            if (have_smooth) {
+                db = 0.70f * smooth_db[x] + 0.30f * db;
+            }
+            if (db > best_db) {
+                best_db = db;
+            }
+        }
+        smooth_db[x] = best_db;
+        bins[x] = best_db;
+    }
+    have_smooth = 1;
+
+    rbdvbt_visualizer_send_spectrum(visualizer_udp,
+                                    sample_rate_hz,
+                                    bins,
+                                    VISUALIZER_SPECTRUM_BINS);
+}
+
+static void visualizer_submit_constellation_points(const complexf_t *points,
+                                                   size_t point_count,
+                                                   uint32_t sample_rate_hz,
+                                                   double snr_db,
+                                                   double pilot_lock,
+                                                   double cfo_hz)
+{
+    float iq[VISUALIZER_CONSTELLATION_POINTS * 2u];
+    size_t stride;
+    size_t out_count = 0u;
+    double now;
+
+    if (!rbdvbt_visualizer_enabled(visualizer_udp) || points == NULL || point_count == 0u) {
+        return;
+    }
+
+    now = monotonic_seconds();
+    if (visualizer_last_constellation_time > 0.0 &&
+        now - visualizer_last_constellation_time < VISUALIZER_MIN_INTERVAL_SECONDS) {
+        return;
+    }
+    visualizer_last_constellation_time = now;
+
+    stride = point_count / VISUALIZER_CONSTELLATION_POINTS;
+    if (stride == 0u) {
+        stride = 1u;
+    }
+    for (size_t i = 0u; i < point_count && out_count < VISUALIZER_CONSTELLATION_POINTS; i += stride) {
+        iq[out_count * 2u] = points[i].re;
+        iq[out_count * 2u + 1u] = points[i].im;
+        out_count++;
+    }
+
+    rbdvbt_visualizer_send_constellation(visualizer_udp,
+                                         sample_rate_hz,
+                                         iq,
+                                         out_count,
+                                         (float)snr_db,
+                                         (float)pilot_lock,
+                                         (float)cfo_hz);
+}
+
 static complexf_t c_rotate(complexf_t a, double phase)
 {
     complexf_t r;
@@ -1444,6 +1580,7 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
         if (cfg->gui) {
             gui_spectrum_submit(&samples[count], got, cfg->sample_rate_hz);
         }
+        visualizer_submit_spectrum_iq(&samples[count], got, cfg->sample_rate_hz);
         count += got;
 
         while (status_period_samples != 0u && (uint64_t)count >= next_status_samples) {
@@ -7208,6 +7345,12 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                                      avg_pilot_lock,
                                      cfo_hz);
         }
+        visualizer_submit_constellation_points(viterbi_symbols,
+                                               viterbi_symbol_cell_count,
+                                               cfg->sample_rate_hz,
+                                               snr_db,
+                                               avg_pilot_lock,
+                                               cfo_hz);
 
         if (cfg->live_mode) {
             if (avg_pilot_lock < LIVE_METADATA_PILOT_LOCK_MIN) {
@@ -7748,12 +7891,22 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         return -1;
     }
 
+    if (rbdvbt_visualizer_open(&visualizer_udp, effective_cfg.visualizer_udp) != 0) {
+        return -1;
+    }
+    visualizer_last_spectrum_time = 0.0;
+    visualizer_last_constellation_time = 0.0;
+
     if (read_probe_samples(&effective_cfg, &samples, &count, &stats) != 0) {
+        rbdvbt_visualizer_close(visualizer_udp);
+        visualizer_udp = NULL;
         return -1;
     }
     t_read = monotonic_seconds();
     if (count == 0u) {
         free(samples);
+        rbdvbt_visualizer_close(visualizer_udp);
+        visualizer_udp = NULL;
         return RBDVBT_PROBE_EOF;
     }
 
@@ -8083,5 +8236,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
 
 done:
     free(samples);
+    rbdvbt_visualizer_close(visualizer_udp);
+    visualizer_udp = NULL;
     return rc;
 }

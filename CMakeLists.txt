@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(rbdvbt_rx VERSION 0.1.2 LANGUAGES C CXX)
+project(rbdvbt_rx VERSION 0.1.3 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -18,6 +18,7 @@ add_executable(rbdvbt_rx
     src/pipeline.c
     src/probe_constellation.c
     src/receiver.c
+    src/visualizer.c
 )
 
 target_include_directories(rbdvbt_rx PRIVATE include)
@@ -121,7 +122,7 @@ if(WIN32)
 endif()
 
 if(WIN32 AND RBDVBT_BUILD_GUI)
-    find_package(Qt6 REQUIRED COMPONENTS Widgets)
+    find_package(Qt6 REQUIRED COMPONENTS Network Widgets)
 
     add_executable(rbdvbt_gui WIN32
         gui/windows/rbdvbt_gui.cpp
@@ -133,6 +134,6 @@ if(WIN32 AND RBDVBT_BUILD_GUI)
         CXX_EXTENSIONS OFF
     )
 
-    target_link_libraries(rbdvbt_gui PRIVATE Qt6::Widgets)
+    target_link_libraries(rbdvbt_gui PRIVATE Qt6::Network Qt6::Widgets)
     target_compile_definitions(rbdvbt_gui PRIVATE RBDVBT_GUI_VERSION="${PROJECT_VERSION}")
 endif()

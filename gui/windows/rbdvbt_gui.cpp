@@ -13,10 +13,16 @@
 #include <QtCore/QSettings>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QSysInfo>
+#include <QtCore/QtEndian>
 #include <QtCore/QTimer>
+#include <QtCore/QVector>
 #include <QtGui/QClipboard>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
+#include <QtNetwork/QHostAddress>
+#include <QtNetwork/QUdpSocket>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -34,22 +40,46 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSplitter>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 
+#include <cstring>
+#include <cmath>
+
 namespace {
 
 #ifdef RBDVBT_GUI_VERSION
 const char *kBuildVersion = RBDVBT_GUI_VERSION;
 #else
-const char *kBuildVersion = "0.1.1";
+const char *kBuildVersion = "0.1.3";
 #endif
 
 const char *kUdpTsBindUrl = "udp://@:10000";
 const char *kUdpTsOut = "127.0.0.1:10000";
+const char *kVisualizerUdpOut = "127.0.0.1:10001";
+const quint16 kVisualizerUdpPort = 10001;
+
+quint16 readLe16(const char *p)
+{
+    return qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(p));
+}
+
+quint32 readLe32(const char *p)
+{
+    return qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(p));
+}
+
+float readLeFloat(const char *p)
+{
+    const quint32 bits = readLe32(p);
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
 
 QString appDir()
 {
@@ -233,6 +263,147 @@ private:
     QTextEdit *dllEdit_ = nullptr;
 };
 
+class SpectrumWidget : public QWidget {
+public:
+    explicit SpectrumWidget(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setMinimumSize(320, 220);
+    }
+
+    void setSpectrum(const QVector<float> &values, quint32 sampleRate)
+    {
+        values_ = values;
+        sampleRate_ = sampleRate;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.fillRect(rect(), Qt::black);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRect plot = rect().adjusted(46, 24, -12, -32);
+        p.setPen(QColor(55, 55, 55));
+        p.drawRect(plot);
+        for (int i = 1; i < 4; ++i) {
+            const int y = plot.top() + plot.height() * i / 4;
+            p.drawLine(plot.left(), y, plot.right(), y);
+        }
+        p.drawLine(plot.center().x(), plot.top(), plot.center().x(), plot.bottom());
+
+        if (values_.isEmpty()) {
+            p.setPen(QColor(210, 210, 210));
+            p.drawText(plot, Qt::AlignCenter, "Geen spectrumdata");
+            return;
+        }
+
+        float minDb = values_.first();
+        float maxDb = values_.first();
+        for (float v : values_) {
+            minDb = qMin(minDb, v);
+            maxDb = qMax(maxDb, v);
+        }
+        float plotMax = std::ceil((maxDb + 3.0f) / 10.0f) * 10.0f;
+        float plotMin = plotMax - 70.0f;
+        if (minDb < plotMin)
+            plotMin = std::floor(minDb / 10.0f) * 10.0f;
+        if (plotMax <= plotMin + 1.0f)
+            plotMax = plotMin + 1.0f;
+
+        QPainterPath path;
+        for (int x = 0; x < plot.width(); ++x) {
+            const int idx = qBound(0, x * values_.size() / qMax(1, plot.width()), values_.size() - 1);
+            const float v = qBound(plotMin, values_[idx], plotMax);
+            const double fy = plot.top() + double(plot.height()) * double(plotMax - v) / double(plotMax - plotMin);
+            const QPointF pt(plot.left() + x, fy);
+            if (x == 0)
+                path.moveTo(pt);
+            else
+                path.lineTo(pt);
+        }
+        p.setPen(QPen(QColor(70, 220, 120), 1.5));
+        p.drawPath(path);
+
+        p.setPen(QColor(230, 210, 80));
+        p.drawText(10, 18, QString("Input IQ spectrum  span=%1 Hz  range=%2..%3 dB")
+            .arg(sampleRate_).arg(plotMin, 0, 'f', 0).arg(plotMax, 0, 'f', 0));
+        const double mhz = double(sampleRate_) / 1000000.0;
+        p.drawText(plot.left(), height() - 10, QString("-%1 MHz").arg(mhz / 2.0, 0, 'g', 3));
+        p.drawText(plot.center().x() - 4, height() - 10, "0");
+        p.drawText(plot.right() - 72, height() - 10, QString("+%1 MHz").arg(mhz / 2.0, 0, 'g', 3));
+    }
+
+private:
+    QVector<float> values_;
+    quint32 sampleRate_ = 0;
+};
+
+class ConstellationWidget : public QWidget {
+public:
+    explicit ConstellationWidget(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setMinimumSize(320, 220);
+    }
+
+    void setConstellation(const QVector<QPointF> &points, float snr, float pilotLock, float cfo)
+    {
+        points_ = points;
+        snr_ = snr;
+        pilotLock_ = pilotLock;
+        cfo_ = cfo;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.fillRect(rect(), Qt::black);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRect plot = rect().adjusted(28, 24, -28, -24);
+        const int side = qMin(plot.width(), plot.height());
+        const QRect square(plot.center().x() - side / 2, plot.center().y() - side / 2, side, side);
+        p.setPen(QColor(55, 55, 55));
+        p.drawRect(square);
+        p.drawLine(square.center().x(), square.top(), square.center().x(), square.bottom());
+        p.drawLine(square.left(), square.center().y(), square.right(), square.center().y());
+
+        if (points_.isEmpty()) {
+            p.setPen(QColor(210, 210, 210));
+            p.drawText(square, Qt::AlignCenter, "Geen constellatiedata");
+            return;
+        }
+
+        double scale = 1.5;
+        for (const QPointF &pt : points_)
+            scale = qMax(scale, qMax(qAbs(pt.x()), qAbs(pt.y())) * 1.2);
+        const double pixels = double(square.width()) / (2.0 * scale);
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 210, 60, 175));
+        for (const QPointF &pt : points_) {
+            const QPointF pos(square.center().x() + pt.x() * pixels,
+                              square.center().y() - pt.y() * pixels);
+            p.drawEllipse(pos, 2.0, 2.0);
+        }
+
+        p.setPen(QColor(230, 210, 80));
+        p.drawText(10, 18, QString("QPSK  SNR=%1 dB  lock=%2  CFO=%3 Hz")
+            .arg(snr_, 0, 'f', 1)
+            .arg(pilotLock_, 0, 'f', 3)
+            .arg(cfo_, 0, 'f', 1));
+    }
+
+private:
+    QVector<QPointF> points_;
+    float snr_ = 0.0f;
+    float pilotLock_ = 0.0f;
+    float cfo_ = 0.0f;
+};
+
 class MainWindow : public QMainWindow {
 public:
     MainWindow()
@@ -322,11 +493,22 @@ private:
         top->setColumnStretch(1, 1);
         root->addLayout(top);
 
-        videoWidget_ = new QWidget(central);
+        auto *display = new QSplitter(Qt::Horizontal, central);
+        videoWidget_ = new QWidget(display);
         videoWidget_->setAutoFillBackground(true);
         videoWidget_->setMinimumHeight(300);
         videoWidget_->setStyleSheet("background: black;");
-        root->addWidget(videoWidget_, 1);
+        display->addWidget(videoWidget_);
+
+        auto *visualTabs = new QTabWidget(display);
+        spectrumWidget_ = new SpectrumWidget(visualTabs);
+        constellationWidget_ = new ConstellationWidget(visualTabs);
+        visualTabs->addTab(spectrumWidget_, "Spectrum");
+        visualTabs->addTab(constellationWidget_, "Constellatie");
+        display->addWidget(visualTabs);
+        display->setStretchFactor(0, 3);
+        display->setStretchFactor(1, 2);
+        root->addWidget(display, 1);
 
         tabs_ = new QTabWidget(central);
         allLog_ = makeLogTab();
@@ -633,6 +815,7 @@ private:
         startTime_ = QDateTime::currentDateTime();
         lastProcessError_.clear();
         loggedWarnings_.clear();
+        startVisualizer();
 
         rtlProcess_ = settings_.inputMode == "file" ? nullptr : new QProcess(this);
         decoderProcess_ = new QProcess(this);
@@ -673,6 +856,7 @@ private:
                         "--sr", settings_.symbolRate, "--gi", settings_.guard, "--fec", settings_.fec,
                         "--udp-out", kUdpTsOut, "--wait-video-start",
                         "--status-json", decoderStatusJsonPath_,
+                        "--visualizer-udp", kVisualizerUdpOut,
                         "--loglevel", settings_.loglevel};
         vlcCommand_ = report.vlcPath;
         const quintptr hwnd = quintptr(videoWidget_->winId());
@@ -740,12 +924,91 @@ private:
         stopProcess("Decoder", decoderProcess_);
         stopProcess("RTL-SDR", rtlProcess_);
         stopIqFilePlayback();
+        stopVisualizer();
         deleteLaterAndClear(vlcProcess_);
         deleteLaterAndClear(decoderProcess_);
         deleteLaterAndClear(rtlProcess_);
         startButton_->setEnabled(true);
         stopButton_->setEnabled(false);
         updateStatus();
+    }
+
+    void startVisualizer()
+    {
+        stopVisualizer();
+        visualizerSocket_ = new QUdpSocket(this);
+        if (!visualizerSocket_->bind(QHostAddress::LocalHost,
+                                     kVisualizerUdpPort,
+                                     QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
+            log("Diagnose", QString("Visualizer UDP bind mislukt op 127.0.0.1:%1: %2")
+                .arg(kVisualizerUdpPort)
+                .arg(visualizerSocket_->errorString()));
+            visualizerSocket_->deleteLater();
+            visualizerSocket_ = nullptr;
+            return;
+        }
+        connect(visualizerSocket_, &QUdpSocket::readyRead, this, [this]() { drainVisualizer(); });
+        log("Diagnose", QString("Visualizer luistert op 127.0.0.1:%1.").arg(kVisualizerUdpPort));
+    }
+
+    void stopVisualizer()
+    {
+        if (!visualizerSocket_)
+            return;
+        visualizerSocket_->close();
+        visualizerSocket_->deleteLater();
+        visualizerSocket_ = nullptr;
+    }
+
+    void drainVisualizer()
+    {
+        if (!visualizerSocket_)
+            return;
+        while (visualizerSocket_->hasPendingDatagrams()) {
+            QByteArray datagram;
+            datagram.resize(int(visualizerSocket_->pendingDatagramSize()));
+            visualizerSocket_->readDatagram(datagram.data(), datagram.size());
+            handleVisualizerPacket(datagram);
+        }
+    }
+
+    void handleVisualizerPacket(const QByteArray &packet)
+    {
+        const int headerLen = 32;
+        if (packet.size() < headerLen || std::memcmp(packet.constData(), "RBV1", 4) != 0)
+            return;
+
+        const quint16 type = readLe16(packet.constData() + 4);
+        const quint32 sampleRate = readLe32(packet.constData() + 12);
+        quint32 count = readLe32(packet.constData() + 16);
+        const float meta0 = readLeFloat(packet.constData() + 20);
+        const float meta1 = readLeFloat(packet.constData() + 24);
+        const float meta2 = readLeFloat(packet.constData() + 28);
+        const char *payload = packet.constData() + headerLen;
+        const int payloadBytes = packet.size() - headerLen;
+
+        if (type == 1) {
+            const quint32 available = quint32(payloadBytes / int(sizeof(float)));
+            count = qMin(count, available);
+            QVector<float> values;
+            values.reserve(int(count));
+            for (quint32 i = 0; i < count; ++i)
+                values.append(readLeFloat(payload + int(i * sizeof(float))));
+            if (spectrumWidget_)
+                spectrumWidget_->setSpectrum(values, sampleRate);
+        } else if (type == 2) {
+            const quint32 available = quint32(payloadBytes / int(2 * sizeof(float)));
+            count = qMin(count, available);
+            QVector<QPointF> points;
+            points.reserve(int(count));
+            for (quint32 i = 0; i < count; ++i) {
+                const int offset = int(i * 2u * sizeof(float));
+                points.append(QPointF(readLeFloat(payload + offset),
+                                      readLeFloat(payload + offset + int(sizeof(float)))));
+            }
+            if (constellationWidget_)
+                constellationWidget_->setConstellation(points, meta0, meta1, meta2);
+        }
     }
 
     void stopProcess(const QString &name, QProcess *process)
@@ -1153,6 +1416,8 @@ private:
     QPushButton *startButton_ = nullptr;
     QPushButton *stopButton_ = nullptr;
     QWidget *videoWidget_ = nullptr;
+    SpectrumWidget *spectrumWidget_ = nullptr;
+    ConstellationWidget *constellationWidget_ = nullptr;
     QTableWidget *statusTable_ = nullptr;
     QLabel *countersLabel_ = nullptr;
     QLabel *signalLabel_ = nullptr;
@@ -1163,6 +1428,7 @@ private:
     QPlainTextEdit *vlcLog_ = nullptr;
     QPlainTextEdit *diagLog_ = nullptr;
     QTimer *statusTimer_ = nullptr;
+    QUdpSocket *visualizerSocket_ = nullptr;
     QProcess *rtlProcess_ = nullptr;
     QProcess *decoderProcess_ = nullptr;
     QProcess *vlcProcess_ = nullptr;
