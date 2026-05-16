@@ -159,7 +159,7 @@ VLC lastig kunnen zijn:
   --sr 250k \
   --gi 1/32 \
   --fec 2/3 \
-  --udp-out 127.0.0.1:10000 \
+  --udp-ts 127.0.0.1:10000 \
   --wait-video-start \
   < capture.iq
 ```
@@ -263,7 +263,7 @@ Voor een Odroid of andere Linux ontvanger staat er een opstartscript dat de
 geteste pipeline combineert:
 
 ```text
-rtl_sdr -> rbdvbt_rx -> MPEG-TS stdout -> ffmpeg -> SRT
+rtl_sdr -> rbdvbt_rx -> MPEG-TS UDP :10000 -> ffmpeg -> SRT
 ```
 
 Standaard gebruikt het script `436000000 Hz`, RTL-SDR device `00000001`,
@@ -295,11 +295,11 @@ Als ffmpeg niet in `PATH` staat:
 FFMPEG=../ffmpeg/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-De receiver schrijft MPEG-TS schoon naar `stdout`; receiver-diagnostiek gaat
-naar `logs/rx_YYYYmmdd_HHMMSS.log`, en status JSON standaard naar
-`/var/www/html/dvb/dvbt-rx-status.json`. Zet `GUI=1` om ook `--gui` aan de receiver door te
-geven. Een lokale UDP-kopie voor meekijken kan met bijvoorbeeld
-`UDP_OUT=127.0.0.1:10000`.
+De PI6EHV pipeline gebruikt standaard `UDP_TS=127.0.0.1:10000` tussen receiver
+en ffmpeg. Daarmee wordt de oude stdout/FIFO-route vermeden. Receiver-diagnostiek
+gaat naar `logs/rx_YYYYmmdd_HHMMSS.log`, en status JSON standaard naar
+`/var/www/html/dvb/dvbt-rx-status.json`. Zet `GUI=1` om ook `--gui` aan de
+receiver door te geven.
 
 De losse webpagina `tools-pi6ehv/dvbt-rx-status.html` leest die JSON via
 `dvb/dvbt-rx-status.json`. Plaats de pagina op de webroot van de Odroid,
@@ -352,7 +352,8 @@ Linux/X11 vensterinterface.
 |---|---|
 | `--stdout-ts` | Schrijf MPEG-TS naar `stdout`. Equivalent aan `--ts-out -`. |
 | `--ts-out FILE` | Schrijf MPEG-TS naar bestand. Gebruik `-` voor `stdout` of `udp://IPv4:PORT` voor UDP. |
-| `--udp-out IPv4:PORT` | Schrijf MPEG-TS via UDP, bijvoorbeeld `--udp-out 127.0.0.1:10000` voor VLC op dezelfde computer. |
+| `--udp-ts IPv4:PORT` | Schrijf MPEG-TS via UDP, bijvoorbeeld `--udp-ts 127.0.0.1:10000` voor VLC op dezelfde computer. |
+| `--udp-out IPv4:PORT` | Alias voor `--udp-ts IPv4:PORT`. |
 | `--live` | Blijf stdin in opeenvolgende decode-chunks verwerken; bij zwakke chunks wordt opnieuw geacquireerd zonder het proces te stoppen. Stdout blijft uitsluitend MPEG-TS. |
 | `--live-symbols N` | Aantal OFDM-symbolen per live frontend chunk. `64` is de geteste standaard voor de huidige Linrad/SDR live pipeline. |
 | `--afc`, `--no-afc` | Zet live AFC aan of uit. AFC staat standaard uit en volgt alleen kleine carrier-bin drift wanneer pilot-lock sterk is of dezelfde drifttrend meerdere chunks zichtbaar blijft. |

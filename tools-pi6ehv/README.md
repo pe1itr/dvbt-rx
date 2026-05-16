@@ -79,6 +79,26 @@ Voor een andere ffmpeg binary:
 FFMPEG=/pad/naar/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
+Het startscript gebruikt standaard UDP poort `10000` als MPEG-TS transport van
+`rbdvbt_rx` naar ffmpeg. Daarmee wordt de stdout/FIFO-route vermeden; die kan
+bij beschadigde of nog niet complete H.264-startpakketten blijven hangen met
+meldingen zoals `non-existing PPS 0 referenced` en `no frame`.
+
+De standaard route is:
+
+```text
+rbdvbt_rx --udp-ts 127.0.0.1:10000 -> ffmpeg udp://@:10000 -> SRT
+```
+
+Voor een andere interne UDP-bestemming:
+
+```sh
+UDP_TS=127.0.0.1:10000 tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+De oude naam `UDP_OUT` blijft als alias werken, maar `UDP_TS` is de
+voorkeursnaam. Zet `UDP_TS=off` om terug te vallen naar de oude stdout/FIFO-route.
+
 Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:
 
 ```sh

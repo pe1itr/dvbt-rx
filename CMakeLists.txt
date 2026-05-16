@@ -18,6 +18,7 @@ add_executable(rbdvbt_rx
     src/pipeline.c
     src/probe_constellation.c
     src/receiver.c
+    src/udp_ts_output.c
     src/visualizer.c
 )
 

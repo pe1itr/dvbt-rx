@@ -31,7 +31,7 @@ ffmpeg_probesize="${FFMPEG_PROBESIZE:-2000000}"
 ffmpeg_analyzeduration="${FFMPEG_ANALYZEDURATION:-2000000}"
 video_start="${WAIT_VIDEO_START:-1}"
 enable_gui="${GUI:-0}"
-udp_out="${UDP_OUT:-}"
+udp_ts="${UDP_TS:-${UDP_OUT:-127.0.0.1:10000}}"
 watchdog_enabled="${WATCHDOG_ENABLED:-1}"
 lock_loss_timeout="${LOCK_LOSS_TIMEOUT:-15}"
 status_stale_timeout="${STATUS_STALE_TIMEOUT:-10}"
@@ -66,7 +66,8 @@ Environment:
   LOCK_LOSS_TIMEOUT seconds without lock after first lock before stopping. Default: ${lock_loss_timeout}
   STATUS_STALE_TIMEOUT seconds without fresh JSON after first lock before stopping. Default: ${status_stale_timeout}
   GUI             pass --gui to rbdvbt_rx when set to 1. Default: 0
-  UDP_OUT         optional extra UDP TS output, for example 127.0.0.1:10000
+  UDP_TS          receiver-to-ffmpeg UDP TS endpoint. Default: ${udp_ts}
+  UDP_OUT         compatibility alias for UDP_TS
   WAIT_VIDEO_START wait for a clean video start when set to 1. Default: 1
 
 Example:
@@ -114,7 +115,6 @@ rx_args=(
     --resample-to-dvbt-rate
     --live-symbols "${live_symbols}"
     --probe-symbols "${probe_symbols}"
-    --stdout-ts
     --status-json "${status_json}"
     --loglevel "${loglevel}"
 )
@@ -130,8 +130,29 @@ fi
 if [ "${enable_gui}" = "1" ]; then
     rx_args+=(--gui)
 fi
-if [ -n "${udp_out}" ]; then
-    rx_args+=(--udp-out "${udp_out}")
+
+rx_udp_ts=""
+ffmpeg_ts_input=""
+case "${udp_ts}" in
+    ""|0|off|OFF|none|NONE) udp_ts="" ;;
+esac
+if [ -n "${udp_ts}" ]; then
+    case "${udp_ts}" in
+        udp://*) rx_udp_ts="${udp_ts#udp://}" ;;
+        *) rx_udp_ts="${udp_ts}" ;;
+    esac
+    rx_udp_ts="${rx_udp_ts%%\?*}"
+    udp_port="${rx_udp_ts##*:}"
+    case "${udp_port}" in
+        ""|*[!0-9]*)
+            printf "Invalid UDP_TS endpoint, expected HOST:PORT: %s\n" "${udp_ts}" >&2
+            exit 2
+            ;;
+    esac
+    rx_args+=(--udp-ts "${rx_udp_ts}")
+    ffmpeg_ts_input="udp://@:${udp_port}?fifo_size=1000000&overrun_nonfatal=1"
+else
+    rx_args+=(--stdout-ts)
 fi
 
 json_bool() {
@@ -182,32 +203,50 @@ printf "Starting RTL-SDR receiver to SRT\n" >&2
 printf "  RF:        %s Hz, sample rate %s, gain %s, device %s\n" "${frequency}" "${sample_rate}" "${gain}" "${device}" >&2
 printf "  DVB-T:     SR %s, GI %s, FEC %s\n" "${symbol_rate}" "${gi}" "${fec}" >&2
 printf "  SRT:       %s\n" "${srt_url}" >&2
+if [ -n "${rx_udp_ts}" ]; then
+    printf "  TS path:   receiver UDP %s -> ffmpeg %s\n" "${rx_udp_ts}" "${ffmpeg_ts_input}" >&2
+else
+    printf "  TS path:   receiver stdout -> ffmpeg FIFO\n" >&2
+fi
 printf "  RX log:    %s\n" "${rxlog}" >&2
 printf "  Status:    %s\n" "${status_json}" >&2
 printf "  Watchdog:  enabled=%s lock_loss=%ss stale_json=%ss\n" "${watchdog_enabled}" "${lock_loss_timeout}" "${status_stale_timeout}" >&2
 
 run_dir="$(mktemp -d "/tmp/dvbt-rx.${session}.XXXXXX")"
 iq_fifo="${run_dir}/iq.u8"
-ts_fifo="${run_dir}/rx.ts"
-mkfifo "${iq_fifo}" "${ts_fifo}"
+mkfifo "${iq_fifo}"
+if [ -z "${ffmpeg_ts_input}" ]; then
+    ts_fifo="${run_dir}/rx.ts"
+    mkfifo "${ts_fifo}"
+    ffmpeg_ts_input="${ts_fifo}"
+fi
 trap cleanup INT TERM EXIT
 
-"${ffmpeg_bin}" \
-    -hide_banner \
-    -loglevel "${ffmpeg_loglevel}" \
-    -f mpegts \
-    -probesize "${ffmpeg_probesize}" \
-    -analyzeduration "${ffmpeg_analyzeduration}" \
-    -i "${ts_fifo}" \
-    -c copy \
-    -f mpegts \
-    "${srt_url}" &
+ffmpeg_args=(
+    -hide_banner
+    -loglevel "${ffmpeg_loglevel}"
+    -fflags nobuffer
+    -f mpegts
+    -probesize "${ffmpeg_probesize}"
+    -analyzeduration "${ffmpeg_analyzeduration}"
+    -i "${ffmpeg_ts_input}"
+    -map 0
+    -c copy
+    -f mpegts
+    "${srt_url}"
+)
+
+"${ffmpeg_bin}" "${ffmpeg_args[@]}" &
 ffmpeg_pid=$!
 
 "${rtl_sdr_bin}" -d "${device}" -f "${frequency}" -s "${sample_rate}" -g "${gain}" - > "${iq_fifo}" &
 rtl_pid=$!
 
-"${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > "${ts_fifo}" 2> "${rxlog}" &
+if [ -n "${rx_udp_ts}" ]; then
+    "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > /dev/null 2> "${rxlog}" &
+else
+    "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > "${ts_fifo}" 2> "${rxlog}" &
+fi
 rx_pid=$!
 
 seen_lock=0

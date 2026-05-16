@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "pipeline.h"
+#include "udp_ts_output.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -10,24 +11,6 @@
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
-typedef SOCKET rbdvbt_socket_t;
-#define RBDVBT_INVALID_SOCKET INVALID_SOCKET
-#define rbdvbt_socket_close closesocket
-#else
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-typedef int rbdvbt_socket_t;
-#define RBDVBT_INVALID_SOCKET (-1)
-#define rbdvbt_socket_close close
-#endif
 
 #ifdef RBDVBT_HAVE_X11
 #include <X11/Xlib.h>
@@ -261,7 +244,7 @@ static void live_outer_alignment_note_result(uint32_t rs_ok,
 typedef struct {
     FILE *file;
     int is_udp;
-    rbdvbt_socket_t sock;
+    rbdvbt_udp_ts_output_t *udp;
     char label[128];
 } ts_output_sink_t;
 
@@ -2117,44 +2100,13 @@ static int ts_output_sink_open_udp(ts_output_sink_t *sink, const char *ts_path)
 {
     char host[96];
     uint16_t port;
-    struct sockaddr_in addr;
 
     if (ts_output_parse_udp_path(ts_path, host, sizeof(host), &port) != 0) {
         fprintf(stderr, "invalid UDP TS output, expected udp://HOST:PORT: %s\n", ts_path);
         return -1;
     }
 
-#ifdef _WIN32
-    {
-        static int wsa_ready;
-        if (!wsa_ready) {
-            WSADATA wsa;
-            if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-                fprintf(stderr, "failed to initialize Winsock for UDP TS output\n");
-                return -1;
-            }
-            wsa_ready = 1;
-        }
-    }
-#endif
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        fprintf(stderr, "invalid UDP TS IPv4 address: %s\n", host);
-        return -1;
-    }
-
-    sink->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sink->sock == RBDVBT_INVALID_SOCKET) {
-        fprintf(stderr, "failed to create UDP TS socket: %s\n", ts_path);
-        return -1;
-    }
-    if (connect(sink->sock, (const struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        fprintf(stderr, "failed to connect UDP TS socket: %s\n", ts_path);
-        rbdvbt_socket_close(sink->sock);
-        sink->sock = RBDVBT_INVALID_SOCKET;
+    if (rbdvbt_udp_ts_output_open(&sink->udp, host, port) != 0) {
         return -1;
     }
 
@@ -2166,7 +2118,6 @@ static int ts_output_sink_open_udp(ts_output_sink_t *sink, const char *ts_path)
 static int ts_output_sink_open(ts_output_sink_t *sink, const char *ts_path, int live_mode)
 {
     memset(sink, 0, sizeof(*sink));
-    sink->sock = RBDVBT_INVALID_SOCKET;
     snprintf(sink->label, sizeof(sink->label), "%s", ts_path != NULL ? ts_path : "-");
 
     if (ts_output_is_udp_path(ts_path)) {
@@ -2187,17 +2138,7 @@ static int ts_output_sink_open(ts_output_sink_t *sink, const char *ts_path, int 
 static int ts_output_sink_write(ts_output_sink_t *sink, const uint8_t *bytes, size_t byte_count)
 {
     if (sink->is_udp) {
-        const char *p = (const char *)bytes;
-        while (byte_count > 0u) {
-            int chunk = byte_count > 1316u ? 1316 : (int)byte_count;
-            int sent = (int)send(sink->sock, p, chunk, 0);
-            if (sent != chunk) {
-                return -1;
-            }
-            p += sent;
-            byte_count -= (size_t)sent;
-        }
-        return 0;
+        return rbdvbt_udp_ts_output_write(sink->udp, bytes, byte_count);
     }
     return fwrite(bytes, 1, byte_count, sink->file) == byte_count ? 0 : -1;
 }
@@ -2207,9 +2148,9 @@ static void ts_output_sink_close(ts_output_sink_t *sink)
     if (sink == NULL) {
         return;
     }
-    if (sink->is_udp && sink->sock != RBDVBT_INVALID_SOCKET) {
-        rbdvbt_socket_close(sink->sock);
-        sink->sock = RBDVBT_INVALID_SOCKET;
+    if (sink->is_udp && sink->udp != NULL) {
+        rbdvbt_udp_ts_output_close(sink->udp);
+        sink->udp = NULL;
     } else if (sink->file != NULL && sink->file != stdout) {
         fclose(sink->file);
     }
@@ -3272,7 +3213,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
     memset(&best, 0, sizeof(best));
     memset(&fifo3, 0, sizeof(fifo3));
     memset(&sink, 0, sizeof(sink));
-    sink.sock = RBDVBT_INVALID_SOCKET;
+    sink.udp = NULL;
     ts_validator_init(&validator);
     if (rbdvbt_fifo_init(&fifo3, "FIFO3_TS_PACKETS", sizeof(rbdvbt_ts_packet_t), FIFO3_CAPACITY_PACKETS) != 0) {
         fprintf(stderr, "[outer] failed to initialize FIFO3 TS packet queue\n");
