@@ -29,6 +29,7 @@ srt_url="${SRT_URL:-srt://44.137.26.85:4001?mode=caller&latency=500000}"
 ffmpeg_loglevel="${FFMPEG_LOGLEVEL:-error}"
 ffmpeg_probesize="${FFMPEG_PROBESIZE:-2000000}"
 ffmpeg_analyzeduration="${FFMPEG_ANALYZEDURATION:-2000000}"
+ffmpeg_map="${FFMPEG_MAP:-0:v:0}"
 video_start="${WAIT_VIDEO_START:-1}"
 enable_gui="${GUI:-0}"
 udp_ts="${UDP_TS:-${UDP_OUT:-127.0.0.1:10000}}"
@@ -62,6 +63,7 @@ Environment:
   LOG_DIR         log directory. Default: ${log_dir}
   RXLOG           receiver log path. Default: ${rxlog}
   FFMPEG_LOGLEVEL ffmpeg loglevel. Default: ${ffmpeg_loglevel}
+  FFMPEG_MAP      ffmpeg stream map for SRT output. Default: ${ffmpeg_map}
   WATCHDOG_ENABLED stop pipeline after lock loss when set to 1. Default: ${watchdog_enabled}
   LOCK_LOSS_TIMEOUT seconds without lock after first lock before stopping. Default: ${lock_loss_timeout}
   STATUS_STALE_TIMEOUT seconds without fresh JSON after first lock before stopping. Default: ${status_stale_timeout}
@@ -230,7 +232,7 @@ ffmpeg_args=(
     -probesize "${ffmpeg_probesize}"
     -analyzeduration "${ffmpeg_analyzeduration}"
     -i "${ffmpeg_ts_input}"
-    -map 0
+    -map "${ffmpeg_map}"
     -c copy
     -f mpegts
     "${srt_url}"

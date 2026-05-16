@@ -299,7 +299,9 @@ De PI6EHV pipeline gebruikt standaard `UDP_TS=127.0.0.1:10000` tussen receiver
 en ffmpeg. Daarmee wordt de oude stdout/FIFO-route vermeden. Receiver-diagnostiek
 gaat naar `logs/rx_YYYYmmdd_HHMMSS.log`, en status JSON standaard naar
 `/var/www/html/dvb/dvbt-rx-status.json`. Zet `GUI=1` om ook `--gui` aan de
-receiver door te geven.
+receiver door te geven. ffmpeg stuurt standaard alleen de eerste videostream
+door (`FFMPEG_MAP=0:v:0`) om onvolledige audioparameters bij zwakke locks niet
+de SRT-outputheader te laten blokkeren.
 
 De losse webpagina `tools-pi6ehv/dvbt-rx-status.html` leest die JSON via
 `dvb/dvbt-rx-status.json`. Plaats de pagina op de webroot van de Odroid,

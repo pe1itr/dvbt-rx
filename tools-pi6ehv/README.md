@@ -99,6 +99,11 @@ UDP_TS=127.0.0.1:10000 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 De oude naam `UDP_OUT` blijft als alias werken, maar `UDP_TS` is de
 voorkeursnaam. Zet `UDP_TS=off` om terug te vallen naar de oude stdout/FIFO-route.
 
+Het script zet ffmpeg standaard op `FFMPEG_MAP=0:v:0`, zodat een onvolledige
+of fout gedetecteerde audiostream de SRT MPEG-TS output niet kan blokkeren met
+`sample rate not set`. Als audio later betrouwbaar nodig is, kan de map bewust
+worden aangepast, bijvoorbeeld met `FFMPEG_MAP=0`.
+
 Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:
 
 ```sh
