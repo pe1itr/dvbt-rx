@@ -2082,6 +2082,7 @@ static int resample_sinc_ratio_live(const complexf_t *in,
     size_t work_count;
     size_t out_cap;
     size_t out_n = 0;
+    complexf_t *out = NULL;
     double t0;
     double t1;
 
@@ -2202,7 +2203,14 @@ static int resample_sinc_ratio_live(const complexf_t *in,
                 load_pct);
     }
 
-    *out_samples = st->out;
+    out = malloc(out_n * sizeof(*out));
+    if (out == NULL) {
+        fprintf(stderr, "failed to allocate live resample output buffer\n");
+        return -1;
+    }
+    memcpy(out, st->out, out_n * sizeof(*out));
+
+    *out_samples = out;
     *out_count = out_n;
     live_resampled_chunk_start_abs = st->output_seq;
     live_resampled_chunk_count = out_n;
@@ -8780,7 +8788,6 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     uint32_t sync_symbols;
     uint32_t start;
     int used_live_sync_hint = 0;
-    int samples_owned = 1;
     complexf_t corr;
     double score;
     double cfo_hz;
@@ -8860,7 +8867,6 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
 
         free(samples);
         samples = resampled;
-        samples_owned = 1;
         count = resampled_count;
         effective_cfg.sample_rate_hz *= 4u;
 
@@ -8891,8 +8897,6 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
 
         target_rate_hz = (uint32_t)lrint(target_rate);
         if (effective_cfg.live_mode) {
-            complexf_t *input_samples = samples;
-
             if (resample_sinc_ratio_live(samples,
                                          count,
                                          ratio,
@@ -8902,15 +8906,11 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                                          &resampled_count) != 0) {
                 goto done;
             }
-            free(input_samples);
-            samples_owned = 0;
         } else if (resample_sinc_ratio(samples, count, ratio, &resampled, &resampled_count) != 0) {
             goto done;
-        } else {
-            free(samples);
-            samples_owned = 1;
         }
 
+        free(samples);
         samples = resampled;
         count = resampled_count;
         effective_cfg.sample_rate_hz = target_rate_hz;
@@ -9186,9 +9186,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     }
 
 done:
-    if (samples_owned) {
-        free(samples);
-    }
+    free(samples);
     rbdvbt_visualizer_close(visualizer_udp);
     visualizer_udp = NULL;
     return rc;
