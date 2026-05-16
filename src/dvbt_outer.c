@@ -6,6 +6,7 @@
 
 #include <math.h>
 #include <pthread.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,7 @@
 #define LIVE_GRDVBT_HARD_FAIL_BLOCKS 32u
 #define LIVE_GRDVBT_LOW_PILOT_RESET_LIMIT 3u
 #define LIVE_GRDVBT_PILOT_LOCK_MIN 0.45
+#define STATUS_JSON_RETRY_SECONDS 30
 
 typedef enum {
     RX_LOCK_SEARCH,
@@ -51,6 +53,22 @@ static uint8_t gf_exp[512];
 static uint8_t gf_log[256];
 static int gf_tables_ready;
 static uint32_t next_status_update_seq;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    char path[1024];
+    int failed;
+    time_t next_retry_unix;
+    uint32_t suppressed;
+} status_json_output_state_t;
+
+static status_json_output_state_t status_json_output = {
+    PTHREAD_MUTEX_INITIALIZER,
+    {0},
+    0,
+    0,
+    0
+};
 
 typedef struct {
     uint8_t *storage;
@@ -2558,6 +2576,97 @@ static void live_status_snapshot_update(const ts_validator_t *v,
     live_status_snapshot.written_packets = written_packets;
 }
 
+static int status_json_write_allowed(const char *path, time_t now)
+{
+    int allowed = 1;
+
+    if (path == NULL) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&status_json_output.mutex);
+    if (strncmp(status_json_output.path, path, sizeof(status_json_output.path)) != 0) {
+        snprintf(status_json_output.path, sizeof(status_json_output.path), "%s", path);
+        status_json_output.failed = 0;
+        status_json_output.next_retry_unix = 0;
+        status_json_output.suppressed = 0;
+    }
+    if (status_json_output.failed && now < status_json_output.next_retry_unix) {
+        status_json_output.suppressed++;
+        allowed = 0;
+    }
+    pthread_mutex_unlock(&status_json_output.mutex);
+
+    return allowed;
+}
+
+static void status_json_note_success(const char *path)
+{
+    uint32_t suppressed = 0;
+    int recovered = 0;
+
+    if (path == NULL) {
+        return;
+    }
+
+    pthread_mutex_lock(&status_json_output.mutex);
+    if (strncmp(status_json_output.path, path, sizeof(status_json_output.path)) == 0 &&
+        status_json_output.failed) {
+        recovered = 1;
+        suppressed = status_json_output.suppressed;
+        status_json_output.failed = 0;
+        status_json_output.next_retry_unix = 0;
+        status_json_output.suppressed = 0;
+    }
+    pthread_mutex_unlock(&status_json_output.mutex);
+
+    if (recovered) {
+        fprintf(stderr,
+                "status JSON output recovered: %s suppressed_writes=%u\n",
+                path,
+                suppressed);
+    }
+}
+
+static void status_json_note_failure(const char *path,
+                                     const char *operation,
+                                     int errnum,
+                                     time_t now)
+{
+    uint32_t suppressed = 0;
+
+    if (path == NULL) {
+        return;
+    }
+
+    pthread_mutex_lock(&status_json_output.mutex);
+    snprintf(status_json_output.path, sizeof(status_json_output.path), "%s", path);
+    suppressed = status_json_output.suppressed;
+    status_json_output.failed = 1;
+    status_json_output.next_retry_unix = now + STATUS_JSON_RETRY_SECONDS;
+    status_json_output.suppressed = 0;
+    pthread_mutex_unlock(&status_json_output.mutex);
+
+    if (errnum != 0) {
+        fprintf(stderr,
+                "failed to %s status JSON output: %s: %s; suppressing status JSON writes for %ds",
+                operation,
+                path,
+                strerror(errnum),
+                STATUS_JSON_RETRY_SECONDS);
+    } else {
+        fprintf(stderr,
+                "failed to %s status JSON output: %s; suppressing status JSON writes for %ds",
+                operation,
+                path,
+                STATUS_JSON_RETRY_SECONDS);
+    }
+    if (suppressed > 0u) {
+        fprintf(stderr, " after %u suppressed writes", suppressed);
+    }
+    fprintf(stderr, "\n");
+}
+
 static void status_write_json(const rbdvbt_status_context_t *status,
                               const ts_validator_t *v,
                               uint32_t rs_bad,
@@ -2694,14 +2803,18 @@ static void status_write_json(const rbdvbt_status_context_t *status,
         return;
     }
 
+    if (!status_json_write_allowed(status->status_json_path, updated_unix)) {
+        return;
+    }
+
     if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", status->status_json_path) >= (int)sizeof(tmp_path)) {
-        fprintf(stderr, "status JSON output path too long: %s\n", status->status_json_path);
+        status_json_note_failure(status->status_json_path, "prepare", 0, updated_unix);
         return;
     }
 
     f = fopen(tmp_path, "w");
     if (f == NULL) {
-        fprintf(stderr, "failed to open status JSON output: %s\n", status->status_json_path);
+        status_json_note_failure(status->status_json_path, "open", errno, updated_unix);
         return;
     }
 
@@ -2829,15 +2942,18 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     fprintf(f, "  \"rs_uncorrectable\": %u\n", display_rs_uncorrectable);
     fprintf(f, "}\n");
     if (fclose(f) != 0) {
-        fprintf(stderr, "failed to close status JSON output: %s\n", tmp_path);
+        status_json_note_failure(status->status_json_path, "close", errno, updated_unix);
         return;
     }
 #ifdef _WIN32
     remove(status->status_json_path);
 #endif
     if (rename(tmp_path, status->status_json_path) != 0) {
-        fprintf(stderr, "failed to publish status JSON output: %s\n", status->status_json_path);
+        status_json_note_failure(status->status_json_path, "publish", errno, updated_unix);
+        remove(tmp_path);
+        return;
     }
+    status_json_note_success(status->status_json_path);
 }
 
 void rbdvbt_status_publish_idle(const rbdvbt_status_context_t *status,
