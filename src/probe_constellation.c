@@ -5053,6 +5053,7 @@ static uint32_t live_decode_invalidate_queued(const char *reason)
 
 #define LIVE_METADATA_PILOT_LOCK_MIN 0.45
 #define LIVE_METADATA_PILOT_LOCK_STRONG 0.55
+#define LIVE_DECODE_PILOT_LOCK_MIN 0.80
 #define LIVE_METADATA_SEARCH_RADIUS 96u
 #define LIVE_METADATA_REFINE_SYMBOLS 4u
 #define LIVE_METADATA_VERIFY_SYMBOLS 8u
@@ -8059,14 +8060,15 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                                                cfo_hz);
 
         if (cfg->live_mode) {
-            if (avg_pilot_lock < LIVE_METADATA_PILOT_LOCK_MIN) {
+            if (avg_pilot_lock < LIVE_DECODE_PILOT_LOCK_MIN) {
                 live_health_note_low_pilot();
                 live_decode_status_snapshot(&status);
                 rbdvbt_status_publish_idle(&status, "pilot-drop", status.input_samples);
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                     fprintf(stderr,
-                            "[dvbt2k] dropping low-pilot live chunk avg_pilot_lock=%.5f snr=%.2fdB; resetting inner continuity\n",
+                            "[dvbt2k] dropping weak live chunk avg_pilot_lock=%.5f decode_min=%.2f snr=%.2fdB; resetting inner continuity\n",
                             avg_pilot_lock,
+                            LIVE_DECODE_PILOT_LOCK_MIN,
                             snr_db);
                 }
                 live_status_hold_clear();

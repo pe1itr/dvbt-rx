@@ -129,13 +129,24 @@ carrier-bin drift kan volgen. Voor een vergelijkende test kan dit uit:
 AFC=0 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-Het startscript bewaakt de receiverstatus. Nadat er eenmaal lock is geweest,
-herstart het standaard de RTL-SDR, receiver en ffmpeg pipeline wanneer `locked`
-langer dan 15 seconden false blijft, wanneer de status-JSON langer dan 10
-seconden niet meer wordt bijgewerkt, of wanneer ffmpeg in een H.264
-no-frame/PPS-foutlus blijft hangen. Daarmee valt de SRT-verbinding kort weg in
-plaats van dat het laatste ontvangen beeld blijft staan of het handmatig
-gestarte script stopt.
+De standaard live chunkgrootte is 128 OFDM-symbols. Kleinere chunks geven
+snellere statusupdates, maar maken de reduced-bandwidth live-keten gevoeliger
+voor korte trackingdippen.
+
+Het startscript bewaakt de receiverstatus. Nadat er eenmaal lock of OFDM-sync
+is geweest, herstart het standaard de RTL-SDR, receiver en ffmpeg pipeline
+wanneer zowel `locked` als `lamp_ofdm_sync` langer dan 15 seconden false
+blijven, wanneer de status-JSON langer dan 10 seconden niet meer wordt
+bijgewerkt, of wanneer ffmpeg in een H.264 no-frame/PPS-foutlus blijft hangen.
+Daarmee krijgt de decoder tijd om TS/video opnieuw te pakken wanneer
+`--wait-video-start` tijdelijk wacht, maar valt de SRT-verbinding nog steeds
+kort weg in plaats van dat het laatste ontvangen beeld blijft staan wanneer de
+frontend-lock echt weg is.
+
+De receiver kan een marginale live chunk droppen en de transportstream opnieuw
+acquiren terwijl `lamp_ofdm_sync` nog true is. Dat is bedoeld om te voorkomen
+dat zwakke chunks de Viterbi/outer FEC state beschadigen; de watchdog grijpt pas
+in wanneer ook de OFDM-sync wegblijft.
 
 ```sh
 LOCK_LOSS_TIMEOUT=20 STATUS_STALE_TIMEOUT=15 tools-pi6ehv/dvbt_rx_pi6ehv.sh

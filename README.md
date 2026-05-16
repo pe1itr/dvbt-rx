@@ -219,7 +219,10 @@ kleine FIFO tussen frontend en inner/outer decoder bij, en probeert na een
 frontend-discontinuity of zwakke chunk opnieuw te locken zonder het proces te
 stoppen. MPEG-TS blijft schoon op `stdout` wanneer `--stdout-ts` of
 `--ts-out -` wordt gebruikt; alle timing-, FIFO- en lockinformatie gaat naar
-`stderr`.
+`stderr`. Live decoding laat marginale chunks met zwakke pilot-lock vallen
+voordat ze de Viterbi/outer FEC state kunnen vervuilen; de status kan daarbij
+nog steeds OFDM-sync tonen terwijl de transportstream tijdelijk opnieuw
+acquiret.
 
 Een live run die is getest met een Linrad/SDR stream op `1010526 Hz` sample
 rate:
@@ -302,10 +305,11 @@ gaat naar `logs/rx_YYYYmmdd_HHMMSS.log`, en status JSON standaard naar
 receiver door te geven. ffmpeg stuurt standaard alleen de eerste videostream
 door (`FFMPEG_MAP=0:v:0`) om onvolledige audioparameters bij zwakke locks niet
 de SRT-outputheader te laten blokkeren. De PI6EHV watchdog stopt de pipeline
-ook wanneer ffmpeg herhaald H.264 `no frame!` of `non-existing PPS` meldt,
-zodat systemd de keten opnieuw kan starten. ffmpeg stderr wordt daarvoor
-standaard tijdelijk onder `/tmp` gelogd en bij cleanup verwijderd; receiverlogs
-worden beperkt met `LOG_KEEP`.
+wanneer na eerdere lock zowel de volledige receiver-lock als OFDM-sync langer
+dan `LOCK_LOSS_TIMEOUT` weg zijn. Ook stopt hij wanneer ffmpeg herhaald H.264
+`no frame!` of `non-existing PPS` meldt, zodat systemd de keten opnieuw kan
+starten. ffmpeg stderr wordt daarvoor standaard tijdelijk onder `/tmp` gelogd
+en bij cleanup verwijderd; receiverlogs worden beperkt met `LOG_KEEP`.
 
 De losse webpagina `tools-pi6ehv/dvbt-rx-status.html` leest die JSON via
 `dvb/dvbt-rx-status.json`. Plaats de pagina op de webroot van de Odroid,

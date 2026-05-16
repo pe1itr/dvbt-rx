@@ -16,7 +16,7 @@ symbol_rate="${SYMBOLRATE:-333000}"
 gain="${GAIN:-30}"
 gi="${GI:-1/32}"
 fec="${FEC:-2/3}"
-live_symbols="${LIVE_SYMBOLS:-64}"
+live_symbols="${LIVE_SYMBOLS:-128}"
 probe_symbols="${PROBE_SYMBOLS:-64}"
 afc="${AFC:-1}"
 input_format="${INPUT_FORMAT:-u8}"
@@ -341,17 +341,20 @@ run_pipeline_once() {
         if [ "${watchdog_enabled}" = "1" ]; then
             now="$(date +%s)"
             locked=""
+            frontend_locked=""
             updated=""
             if [ -f "${status_json}" ]; then
                 locked="$(json_bool locked "${status_json}")"
+                frontend_locked="$(json_bool lamp_ofdm_sync "${status_json}")"
                 updated="$(json_uint updated_unix "${status_json}")"
             fi
             if [ -n "${updated}" ] && [ "${updated}" -lt "${start_time}" ]; then
                 locked=""
+                frontend_locked=""
                 updated=""
             fi
 
-            if [ "${locked}" = "true" ]; then
+            if [ "${locked}" = "true" ] || [ "${frontend_locked}" = "true" ]; then
                 seen_lock=1
                 lock_lost_since=0
             elif [ "${seen_lock}" = "1" ]; then
