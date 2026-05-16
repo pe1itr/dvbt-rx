@@ -246,6 +246,17 @@ stabiele pilot-lock, `rs_uncorr=0`, `cc=0` en geen FIFO-drops. Na de 64-state
 Viterbi optimalisatie ligt de Viterbi-tijd voor 64-symbol chunks typisch rond
 `0.125-0.127 s` op deze testopstelling.
 
+Live Viterbi timing wordt uitgesplitst in `stderr` als `viterbi-detail`, met
+velden voor `depuncture`, `acs`, `traceback`, `pack`, `outer` en `total`. Voor
+regressietests tussen twee binaries kan dezelfde IQ-capture worden vergeleken:
+
+```sh
+tools/compare_viterbi_decoders.sh ./old/rbdvbt_rx ./build/rbdvbt_rx \
+  --input capture.s16 -- --stdin --input-format s16 --sample-rate 1010526 \
+  --sr 333k --gi 1/32 --fec 2/3 --live --probe-constellation \
+  --resample-to-dvbt-rate --dvbt-ir 1 --ts-out -
+```
+
 ### RTL-SDR naar SRT
 
 Voor een Odroid of andere Linux ontvanger staat er een opstartscript dat de

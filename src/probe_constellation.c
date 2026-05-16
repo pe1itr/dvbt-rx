@@ -4486,6 +4486,11 @@ typedef struct {
     float y_cost[2];
 } qpsk_dibit_t;
 
+#define LIVE_SOFT_FRAME_SYMBOLS 512u
+#define LIVE_DECODE_WINDOW_SYMBOLS 256u
+#define LIVE_VITERBI_CONSUME_SYMBOLS 64u
+#define VITERBI_STATE_COUNT 64u
+
 typedef struct {
     uint8_t x;
     uint8_t y;
@@ -4506,9 +4511,16 @@ static live_viterbi_state_t live_viterbi_state;
 typedef struct {
     int valid;
     rbdvbt_fec_t fec;
-    float metrics[128];
+    float metrics_a[VITERBI_STATE_COUNT];
+    float metrics_b[VITERBI_STATE_COUNT];
+    float *old_metrics;
+    float *new_metrics;
     uint8_t *history;
     size_t history_len;
+    viterbi_pair_t *pairs;
+    size_t pair_cap;
+    uint8_t *output;
+    size_t output_cap;
     uint64_t steps;
     uint8_t out_byte;
     uint32_t out_bits;
@@ -4529,13 +4541,25 @@ typedef struct {
 } live_soft_dibit_fifo_t;
 
 static live_soft_dibit_fifo_t live_soft_dibit_fifo;
-#define LIVE_SOFT_FRAME_SYMBOLS 512u
-#define LIVE_DECODE_WINDOW_SYMBOLS 256u
-#define LIVE_VITERBI_CONSUME_SYMBOLS 64u
-#define VITERBI_STATE_COUNT 64u
+
+typedef struct {
+    uint8_t prev_state;
+    uint8_t next_state;
+    uint8_t expected;
+    uint8_t survivor_bit;
+} viterbi_transition_t;
+
+typedef struct {
+    double depuncture;
+    double acs;
+    double traceback;
+    double pack;
+} viterbi_detail_t;
 
 static uint8_t viterbi_prev_state_table[VITERBI_STATE_COUNT][2];
 static uint8_t viterbi_expected_table[VITERBI_STATE_COUNT][2];
+static uint8_t viterbi_transition_index_table[VITERBI_STATE_COUNT][2];
+static viterbi_transition_t viterbi_transition_table[128];
 static int viterbi_tables_ready;
 
 typedef struct live_decode_job {
@@ -4955,28 +4979,24 @@ static void dvbt_qpsk_soft_bit_deinterleave_block(const complexf_t *symbols,
     }
 }
 
-static int dvbt_qpsk_inner_deinterleave_symbols(const complexf_t *raw_symbols,
-                                                size_t symbol_cell_count,
-                                                uint32_t model_symbol_start,
-                                                qpsk_dibit_t **out_dibits,
-                                                size_t *out_dibit_count)
+static int dvbt_qpsk_inner_deinterleave_symbols_into(const complexf_t *raw_symbols,
+                                                     size_t symbol_cell_count,
+                                                     uint32_t model_symbol_start,
+                                                     qpsk_dibit_t *dibits,
+                                                     size_t dibit_cap,
+                                                     size_t *out_dibit_count)
 {
-    qpsk_dibit_t *dibits;
     size_t full_symbols = symbol_cell_count / RBDVBT_DVBT_2K_DATA_CELLS;
     size_t out_count = full_symbols * RBDVBT_DVBT_2K_DATA_CELLS;
 
-    if (out_dibits == NULL || out_dibit_count == NULL) {
+    if (out_dibit_count == NULL) {
         return -1;
     }
-    *out_dibits = NULL;
     *out_dibit_count = 0u;
     if (out_count == 0u) {
         return 0;
     }
-
-    dibits = malloc(out_count * sizeof(*dibits));
-    if (dibits == NULL) {
-        fprintf(stderr, "failed to allocate inner deinterleave dibits\n");
+    if (dibits == NULL || dibit_cap < out_count) {
         return -1;
     }
 
@@ -5011,12 +5031,49 @@ static int dvbt_qpsk_inner_deinterleave_symbols(const complexf_t *raw_symbols,
         }
     }
 
-    *out_dibits = dibits;
     *out_dibit_count = out_count;
     return 0;
 }
 
-static uint8_t dvbt_conv_parity_for_state(uint8_t state)
+static int dvbt_qpsk_inner_deinterleave_symbols(const complexf_t *raw_symbols,
+                                                size_t symbol_cell_count,
+                                                uint32_t model_symbol_start,
+                                                qpsk_dibit_t **out_dibits,
+                                                size_t *out_dibit_count)
+{
+    qpsk_dibit_t *dibits;
+    size_t full_symbols = symbol_cell_count / RBDVBT_DVBT_2K_DATA_CELLS;
+    size_t out_count = full_symbols * RBDVBT_DVBT_2K_DATA_CELLS;
+
+    if (out_dibits == NULL || out_dibit_count == NULL) {
+        return -1;
+    }
+    *out_dibits = NULL;
+    *out_dibit_count = 0u;
+    if (out_count == 0u) {
+        return 0;
+    }
+
+    dibits = malloc(out_count * sizeof(*dibits));
+    if (dibits == NULL) {
+        fprintf(stderr, "failed to allocate inner deinterleave dibits\n");
+        return -1;
+    }
+    if (dvbt_qpsk_inner_deinterleave_symbols_into(raw_symbols,
+                                                  symbol_cell_count,
+                                                  model_symbol_start,
+                                                  dibits,
+                                                  out_count,
+                                                  out_dibit_count) != 0) {
+        free(dibits);
+        return -1;
+    }
+
+    *out_dibits = dibits;
+    return 0;
+}
+
+static inline uint8_t dvbt_conv_parity_for_state(uint8_t state)
 {
     uint8_t count = 0;
     uint8_t parity;
@@ -5068,9 +5125,23 @@ static void viterbi_init_tables(void)
     for (uint32_t next_state = 0; next_state < VITERBI_STATE_COUNT; ++next_state) {
         for (uint32_t pred = 0; pred < 2u; ++pred) {
             uint8_t reg = (uint8_t)((next_state << 1) | pred);
+            uint8_t prev_state = (uint8_t)(reg & 0x3fu);
+            uint8_t bit = (uint8_t)((reg >> 6) & 1u);
 
-            viterbi_prev_state_table[next_state][pred] = (uint8_t)(reg & 0x3fu);
+            viterbi_prev_state_table[next_state][pred] = prev_state;
             viterbi_expected_table[next_state][pred] = dvbt_conv_parity_for_state(reg);
+            viterbi_transition_index_table[next_state][pred] = (uint8_t)((prev_state << 1) | bit);
+        }
+    }
+    for (uint32_t state = 0; state < VITERBI_STATE_COUNT; ++state) {
+        for (uint32_t bit = 0; bit < 2u; ++bit) {
+            uint8_t reg = (uint8_t)((bit << 6) | state);
+            viterbi_transition_t *tr = &viterbi_transition_table[(state << 1) | bit];
+
+            tr->prev_state = (uint8_t)state;
+            tr->next_state = (uint8_t)(reg >> 1);
+            tr->expected = dvbt_conv_parity_for_state(reg);
+            tr->survivor_bit = (uint8_t)bit;
         }
     }
     viterbi_tables_ready = 1;
@@ -5126,6 +5197,54 @@ static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
                                      const qpsk_dibit_t *dibits,
                                      size_t dibit_count,
                                      viterbi_pair_t **out_pairs);
+static size_t dvbt_depuncture_pair_count(rbdvbt_fec_t fec, size_t dibit_count);
+static size_t dvbt_depuncture_dibits_into(rbdvbt_fec_t fec,
+                                          const qpsk_dibit_t *dibits,
+                                          size_t dibit_count,
+                                          viterbi_pair_t *pairs,
+                                          size_t pair_cap);
+
+static int live_viterbi_stream_reserve_pairs(size_t pair_count)
+{
+    if (pair_count <= live_viterbi_stream.pair_cap) {
+        return 0;
+    }
+    {
+        viterbi_pair_t *pairs = realloc(live_viterbi_stream.pairs, pair_count * sizeof(*pairs));
+
+        if (pairs == NULL) {
+            return -1;
+        }
+        live_viterbi_stream.pairs = pairs;
+        live_viterbi_stream.pair_cap = pair_count;
+    }
+    return 0;
+}
+
+static int live_viterbi_stream_reserve_output(size_t byte_count)
+{
+    if (byte_count <= live_viterbi_stream.output_cap) {
+        return 0;
+    }
+    {
+        size_t cap = live_viterbi_stream.output_cap != 0u ? live_viterbi_stream.output_cap : 4096u;
+        uint8_t *output;
+
+        while (cap < byte_count) {
+            if (cap > ((size_t)-1) / 2u) {
+                return -1;
+            }
+            cap *= 2u;
+        }
+        output = realloc(live_viterbi_stream.output, cap);
+        if (output == NULL) {
+            return -1;
+        }
+        live_viterbi_stream.output = output;
+        live_viterbi_stream.output_cap = cap;
+    }
+    return 0;
+}
 
 static int live_viterbi_stream_prepare(rbdvbt_fec_t fec)
 {
@@ -5145,8 +5264,11 @@ static int live_viterbi_stream_prepare(rbdvbt_fec_t fec)
     }
 
     for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-        live_viterbi_stream.metrics[s] = 0.0;
+        live_viterbi_stream.metrics_a[s] = 0.0f;
+        live_viterbi_stream.metrics_b[s] = 0.0f;
     }
+    live_viterbi_stream.old_metrics = live_viterbi_stream.metrics_a;
+    live_viterbi_stream.new_metrics = live_viterbi_stream.metrics_b;
     live_viterbi_stream.fec = fec;
     live_viterbi_stream.steps = 0u;
     live_viterbi_stream.out_byte = 0u;
@@ -5167,14 +5289,11 @@ static int live_viterbi_stream_emit_bit(uint8_t bit,
     }
 
     if (*out_count >= *out_cap) {
-        size_t new_cap = *out_cap != 0u ? *out_cap * 2u : 4096u;
-        uint8_t *new_out = realloc(*out, new_cap);
-
-        if (new_out == NULL) {
+        if (live_viterbi_stream_reserve_output(*out_count + 1u) != 0) {
             return -1;
         }
-        *out = new_out;
-        *out_cap = new_cap;
+        *out = live_viterbi_stream.output;
+        *out_cap = live_viterbi_stream.output_cap;
     }
     (*out)[(*out_count)++] = live_viterbi_stream.out_byte;
     live_viterbi_stream.out_byte = 0u;
@@ -5189,10 +5308,10 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
                                             uint8_t **out_bytes,
                                             size_t *out_byte_count,
                                             size_t *out_pair_count,
-                                            double *out_best_metric)
+                                            double *out_best_metric,
+                                            viterbi_detail_t *detail)
 {
     const float inf = 1.0e30f;
-    viterbi_pair_t *pairs = NULL;
     uint8_t *out = NULL;
     size_t out_count = 0u;
     size_t out_cap = 0u;
@@ -5201,6 +5320,9 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
     float best_metric = 0.0f;
     int rc = -1;
 
+    if (detail != NULL) {
+        memset(detail, 0, sizeof(*detail));
+    }
     *out_bytes = NULL;
     *out_byte_count = 0u;
     if (out_pair_count != NULL) {
@@ -5218,8 +5340,25 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
     }
     viterbi_init_tables();
 
-    pair_count = dvbt_depuncture_dibits(fec, dibits, dibit_count, &pairs);
-    if (pair_count == 0u || pairs == NULL) {
+    {
+        double t0 = monotonic_seconds();
+
+        pair_count = dvbt_depuncture_pair_count(fec, dibit_count);
+        if (pair_count == 0u ||
+            live_viterbi_stream_reserve_pairs(pair_count) != 0) {
+            fprintf(stderr, "failed to depuncture live Viterbi input\n");
+            goto done;
+        }
+        pair_count = dvbt_depuncture_dibits_into(fec,
+                                                 dibits,
+                                                 dibit_count,
+                                                 live_viterbi_stream.pairs,
+                                                 live_viterbi_stream.pair_cap);
+        if (detail != NULL) {
+            detail->depuncture += monotonic_seconds() - t0;
+        }
+    }
+    if (pair_count == 0u) {
         fprintf(stderr, "failed to depuncture live Viterbi input\n");
         goto done;
     }
@@ -5227,20 +5366,25 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
         *out_pair_count = pair_count;
     }
 
+    out = live_viterbi_stream.output;
+    out_cap = live_viterbi_stream.output_cap;
     for (size_t t = 0; t < pair_count; ++t) {
-        const viterbi_pair_t *pair = &pairs[t];
-        float next_metrics[VITERBI_STATE_COUNT];
+        const viterbi_pair_t *pair = &live_viterbi_stream.pairs[t];
+        float *old_metrics = live_viterbi_stream.old_metrics;
+        float *new_metrics = live_viterbi_stream.new_metrics;
         float step_best = inf;
         int best_state = 0;
         uint8_t *history_row = &live_viterbi_stream.history[(live_viterbi_stream.steps % traceback_bits) * VITERBI_STATE_COUNT];
+        int sample_timing = detail != NULL && ((t & 4095u) == 0u);
+        double acs_t0 = sample_timing ? monotonic_seconds() : 0.0;
 
         for (uint32_t next_state = 0; next_state < VITERBI_STATE_COUNT; ++next_state) {
             uint8_t prev0 = viterbi_prev_state_table[next_state][0];
             uint8_t prev1 = viterbi_prev_state_table[next_state][1];
             uint8_t exp0 = viterbi_expected_table[next_state][0];
             uint8_t exp1 = viterbi_expected_table[next_state][1];
-            float metric0 = live_viterbi_stream.metrics[prev0];
-            float metric1 = live_viterbi_stream.metrics[prev1];
+            float metric0 = old_metrics[prev0];
+            float metric1 = old_metrics[prev1];
 
             if (pair->has_x) {
                 metric0 += pair->x_cost[exp0 & 1u];
@@ -5252,14 +5396,14 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
             }
 
             if (metric0 <= metric1) {
-                next_metrics[next_state] = metric0;
+                new_metrics[next_state] = metric0;
                 history_row[next_state] = prev0;
             } else {
-                next_metrics[next_state] = metric1;
+                new_metrics[next_state] = metric1;
                 history_row[next_state] = prev1;
             }
-            if (next_metrics[next_state] < step_best) {
-                step_best = next_metrics[next_state];
+            if (new_metrics[next_state] < step_best) {
+                step_best = new_metrics[next_state];
                 best_state = (int)next_state;
             }
         }
@@ -5268,13 +5412,28 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
             goto done;
         }
         for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-            live_viterbi_stream.metrics[s] = next_metrics[s] - step_best;
+            new_metrics[s] -= step_best;
+        }
+        {
+            float *tmp = live_viterbi_stream.old_metrics;
+
+            live_viterbi_stream.old_metrics = live_viterbi_stream.new_metrics;
+            live_viterbi_stream.new_metrics = tmp;
+        }
+        if (sample_timing) {
+            size_t sample_scale = pair_count - t;
+
+            if (sample_scale > 4096u) {
+                sample_scale = 4096u;
+            }
+            detail->acs += (monotonic_seconds() - acs_t0) * (double)sample_scale;
         }
         best_metric += step_best;
         live_viterbi_stream.steps++;
 
         if (live_viterbi_stream.steps > traceback_bits) {
             uint8_t state = (uint8_t)best_state;
+            double tb_t0 = sample_timing ? monotonic_seconds() : 0.0;
 
             for (size_t k = 0; k < traceback_bits; ++k) {
                 uint64_t step = live_viterbi_stream.steps - 1u - k;
@@ -5282,11 +5441,18 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
 
                 state = row[state];
             }
+            if (sample_timing) {
+                detail->traceback += (monotonic_seconds() - tb_t0) * 4096.0;
+            }
+            tb_t0 = sample_timing ? monotonic_seconds() : 0.0;
             if (live_viterbi_stream_emit_bit((uint8_t)((state >> 5) & 1u),
                                              &out,
                                              &out_count,
                                              &out_cap) != 0) {
                 goto done;
+            }
+            if (sample_timing) {
+                detail->pack += (monotonic_seconds() - tb_t0) * 4096.0;
             }
         }
     }
@@ -5300,27 +5466,16 @@ static int live_viterbi_stream_decode_bytes(rbdvbt_fec_t fec,
     rc = 0;
 
 done:
-    free(pairs);
-    free(out);
     return rc;
 }
 
-static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
-                                     const qpsk_dibit_t *dibits,
-                                     size_t dibit_count,
-                                     viterbi_pair_t **out_pairs)
+static size_t dvbt_depuncture_pair_count(rbdvbt_fec_t fec, size_t dibit_count)
 {
     size_t group_in = 1;
     size_t group_out = 1;
-    size_t groups;
-    size_t pair_count;
-    viterbi_pair_t *pairs;
-    size_t i;
-    size_t o = 0;
 
     switch (fec) {
     case RBDVBT_FEC_AUTO:
-        *out_pairs = NULL;
         return 0;
     case RBDVBT_FEC_1_2:
         group_in = 1;
@@ -5344,11 +5499,44 @@ static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
         break;
     }
 
+    return (dibit_count / group_in) * group_out;
+}
+
+static size_t dvbt_depuncture_dibits_into(rbdvbt_fec_t fec,
+                                          const qpsk_dibit_t *dibits,
+                                          size_t dibit_count,
+                                          viterbi_pair_t *pairs,
+                                          size_t pair_cap)
+{
+    size_t group_in = 1;
+    size_t groups;
+    size_t pair_count;
+    size_t i;
+    size_t o = 0;
+
+    switch (fec) {
+    case RBDVBT_FEC_AUTO:
+        return 0;
+    case RBDVBT_FEC_1_2:
+        group_in = 1;
+        break;
+    case RBDVBT_FEC_2_3:
+        group_in = 3;
+        break;
+    case RBDVBT_FEC_3_4:
+        group_in = 2;
+        break;
+    case RBDVBT_FEC_5_6:
+        group_in = 3;
+        break;
+    case RBDVBT_FEC_7_8:
+        group_in = 4;
+        break;
+    }
+
     groups = dibit_count / group_in;
-    pair_count = groups * group_out;
-    pairs = calloc(pair_count, sizeof(*pairs));
-    if (pairs == NULL) {
-        *out_pairs = NULL;
+    pair_count = dvbt_depuncture_pair_count(fec, dibit_count);
+    if (pair_cap < pair_count) {
         return 0;
     }
 
@@ -5391,6 +5579,31 @@ static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
         }
     }
 
+    return pair_count;
+}
+
+static size_t dvbt_depuncture_dibits(rbdvbt_fec_t fec,
+                                     const qpsk_dibit_t *dibits,
+                                     size_t dibit_count,
+                                     viterbi_pair_t **out_pairs)
+{
+    size_t pair_count = dvbt_depuncture_pair_count(fec, dibit_count);
+    viterbi_pair_t *pairs;
+
+    if (pair_count == 0u) {
+        *out_pairs = NULL;
+        return 0;
+    }
+    pairs = malloc(pair_count * sizeof(*pairs));
+    if (pairs == NULL) {
+        *out_pairs = NULL;
+        return 0;
+    }
+    if (dvbt_depuncture_dibits_into(fec, dibits, dibit_count, pairs, pair_count) != pair_count) {
+        free(pairs);
+        *out_pairs = NULL;
+        return 0;
+    }
     *out_pairs = pairs;
     return pair_count;
 }
@@ -5404,8 +5617,10 @@ static int dvbt_viterbi_decode_pairs(const viterbi_pair_t *pairs,
                                      double *out_best_metric)
 {
     const double inf = 1.0e100;
-    double metrics[VITERBI_STATE_COUNT];
-    double next_metrics[VITERBI_STATE_COUNT];
+    double metrics_a[VITERBI_STATE_COUNT];
+    double metrics_b[VITERBI_STATE_COUNT];
+    double *old_metrics = metrics_a;
+    double *new_metrics = metrics_b;
     uint8_t *prev_states = NULL;
     uint8_t *bits = NULL;
     int best_state = 0;
@@ -5420,56 +5635,58 @@ static int dvbt_viterbi_decode_pairs(const viterbi_pair_t *pairs,
         return -1;
     }
 
+    viterbi_init_tables();
     for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-        metrics[s] = initial_metrics != NULL ? initial_metrics[s] : 0.0;
+        old_metrics[s] = initial_metrics != NULL ? initial_metrics[s] : 0.0;
     }
 
     for (t = 0; t < pair_count; ++t) {
-        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-            next_metrics[s] = inf;
-            prev_states[t * VITERBI_STATE_COUNT + (size_t)s] = 0;
-        }
+        const viterbi_pair_t *pair = &pairs[t];
 
-        for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-            if (metrics[s] >= inf) {
-                continue;
+        for (uint32_t next_state = 0; next_state < VITERBI_STATE_COUNT; ++next_state) {
+            uint8_t prev0 = viterbi_prev_state_table[next_state][0];
+            uint8_t prev1 = viterbi_prev_state_table[next_state][1];
+            uint8_t exp0 = viterbi_expected_table[next_state][0];
+            uint8_t exp1 = viterbi_expected_table[next_state][1];
+            double metric0 = old_metrics[prev0];
+            double metric1 = old_metrics[prev1];
+
+            if (pair->has_x) {
+                metric0 += pair->x_cost[exp0 & 1u];
+                metric1 += pair->x_cost[exp1 & 1u];
+            }
+            if (pair->has_y) {
+                metric0 += pair->y_cost[(exp0 >> 1) & 1u];
+                metric1 += pair->y_cost[(exp1 >> 1) & 1u];
             }
 
-            for (int bit = 0; bit <= 1; ++bit) {
-                uint8_t reg = (uint8_t)(((uint8_t)bit << 6) | (uint8_t)s);
-                uint8_t next_state = (uint8_t)(reg >> 1);
-                uint8_t expected = dvbt_conv_parity_for_state(reg);
-                double branch = 0.0;
-                double metric;
-
-                if (pairs[t].has_x) {
-                    branch += pairs[t].x_cost[expected & 1u];
-                }
-                if (pairs[t].has_y) {
-                    branch += pairs[t].y_cost[(expected >> 1) & 1u];
-                }
-
-                metric = metrics[s] + branch;
-                if (metric < next_metrics[next_state]) {
-                    next_metrics[next_state] = metric;
-                    prev_states[t * VITERBI_STATE_COUNT + (size_t)next_state] = (uint8_t)s;
-                }
+            if (metric0 <= metric1) {
+                new_metrics[next_state] = metric0;
+                prev_states[t * VITERBI_STATE_COUNT + (size_t)next_state] = prev0;
+            } else {
+                new_metrics[next_state] = metric1;
+                prev_states[t * VITERBI_STATE_COUNT + (size_t)next_state] = prev1;
             }
         }
 
-        memcpy(metrics, next_metrics, sizeof(metrics));
+        {
+            double *tmp = old_metrics;
+
+            old_metrics = new_metrics;
+            new_metrics = tmp;
+        }
     }
 
     for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-        if (metrics[s] < best_metric) {
-            best_metric = metrics[s];
+        if (old_metrics[s] < best_metric) {
+            best_metric = old_metrics[s];
             best_state = (int)s;
         }
     }
 
     if (final_metrics != NULL) {
         for (uint32_t s = 0; s < VITERBI_STATE_COUNT; ++s) {
-            final_metrics[s] = metrics[s] - best_metric;
+            final_metrics[s] = old_metrics[s] - best_metric;
         }
         for (uint32_t s = VITERBI_STATE_COUNT; s < 128u; ++s) {
             final_metrics[s] = inf;
@@ -5580,11 +5797,15 @@ static int write_selected_viterbi_output(rbdvbt_fec_t fec,
 	                                         int continuous,
 	                                         const char *path,
 	                                         const char *ts_path,
-	                                         const rbdvbt_status_context_t *status)
+	                                         const rbdvbt_status_context_t *status,
+                                             double *out_outer_time)
 {
 	    FILE *f = NULL;
 	    int rc = -1;
 
+    if (out_outer_time != NULL) {
+        *out_outer_time = 0.0;
+    }
     if (path != NULL) {
         f = fopen(path, "wb");
         if (f == NULL) {
@@ -5610,6 +5831,8 @@ static int write_selected_viterbi_output(rbdvbt_fec_t fec,
     }
 
 	    if (ts_path != NULL) {
+            double outer_t0 = out_outer_time != NULL ? monotonic_seconds() : 0.0;
+
 	        if (status != NULL && status->live_mode) {
 	            (void)seq_start;
 	            (void)symbol_count;
@@ -5621,6 +5844,9 @@ static int write_selected_viterbi_output(rbdvbt_fec_t fec,
 	            }
         } else if (rbdvbt_outer_recover_ts(bytes, byte_count, ts_path, status) != 0) {
             goto done;
+        }
+        if (out_outer_time != NULL) {
+            *out_outer_time = monotonic_seconds() - outer_t0;
         }
     }
 
@@ -5657,6 +5883,11 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
     double viterbi_t0 = 0.0;
     double viterbi_t1 = 0.0;
     double output_t1 = 0.0;
+    double outer_time = 0.0;
+    int bytes_owned = 0;
+    viterbi_detail_t detail;
+
+    memset(&detail, 0, sizeof(detail));
 	
 	    if (fec != RBDVBT_FEC_AUTO) {
 	        double final_metrics[128];
@@ -5673,12 +5904,28 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
 	                                                 &bytes,
 	                                                 &byte_count,
 	                                                 &pair_count,
-	                                                 &best_metric) != 0) {
+	                                                 &best_metric,
+                                                     &detail) != 0) {
 	                live_viterbi_stream_reset();
 	                live_viterbi_state.valid = 0;
 		                return -1;
 		            }
                     viterbi_t1 = monotonic_seconds();
+                    {
+                        double measured = viterbi_t1 > viterbi_t0 ? viterbi_t1 - viterbi_t0 : 0.0;
+                        double rest = measured > detail.depuncture ? measured - detail.depuncture : 0.0;
+                        double sampled = detail.acs + detail.traceback + detail.pack;
+
+                        if (sampled > 0.0) {
+                            double scale = rest / sampled;
+
+                            detail.acs *= scale;
+                            detail.traceback *= scale;
+                            detail.pack *= scale;
+                        } else {
+                            detail.acs = rest;
+                        }
+                    }
 		            if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
 	                fprintf(stderr,
 	                        "[viterbi] live_stream=%s fec=%s traceback_bytes=%u emitted_bytes=%zu\n",
@@ -5700,6 +5947,7 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
 	                live_viterbi_state.valid = 0;
 	                return -1;
 	            }
+                bytes_owned = 1;
 	        }
 		        {
 	            int rc = write_selected_viterbi_output(fec,
@@ -5713,20 +5961,26 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
 	                                                   continuous,
 	                                                   path,
 		                                                   ts_path,
-	                                                   status);
+	                                                   status,
+                                                       status != NULL && status->live_mode ? &outer_time : NULL);
                 if (status != NULL && status->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                     output_t1 = monotonic_seconds();
                     fprintf(stderr,
-                            "[viterbi-time] seq=%llu symbols=%u dibits=%zu bytes=%zu viterbi=%.3fs output_outer=%.3fs total=%.3fs\n",
+                            "[viterbi-detail] seq=%llu symbols=%u dibits=%zu bytes=%zu depuncture=%.6fs acs=%.6fs traceback=%.6fs pack=%.6fs outer=%.6fs total=%.6fs\n",
                             (unsigned long long)seq_start,
                             symbol_count,
                             dibit_count,
                             byte_count,
-                            viterbi_t1 > viterbi_t0 ? viterbi_t1 - viterbi_t0 : 0.0,
-                            output_t1 > viterbi_t1 ? output_t1 - viterbi_t1 : 0.0,
+                            detail.depuncture,
+                            detail.acs,
+                            detail.traceback,
+                            detail.pack,
+                            outer_time,
                             output_t1 > viterbi_t0 ? output_t1 - viterbi_t0 : 0.0);
                 }
-	            free(bytes);
+                if (bytes_owned) {
+	                free(bytes);
+                }
             if (status != NULL && status->live_mode && rc == 0) {
                 live_viterbi_state.valid = live_viterbi_stream.valid;
                 live_viterbi_state.fec = fec;
@@ -5848,7 +6102,8 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
 	                                               continuous,
 	                                               path,
 	                                               ts_path,
-                                               selected_status_ptr);
+                                               selected_status_ptr,
+                                               NULL);
             free(selected_bytes);
             return rc;
         }
@@ -5857,6 +6112,9 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
 
 static void *live_decode_worker_main(void *arg)
 {
+    qpsk_dibit_t *worker_dibits = NULL;
+    size_t worker_dibit_cap = 0u;
+
     (void)arg;
 
     for (;;) {
@@ -5914,7 +6172,7 @@ static void *live_decode_worker_main(void *arg)
                 consume_cells = job->symbol_cell_count;
             }
             while (offset < job->symbol_cell_count) {
-                qpsk_dibit_t *viterbi_dibits = NULL;
+                qpsk_dibit_t *viterbi_dibits = worker_dibits;
                 size_t viterbi_dibit_count = 0u;
                 size_t count = job->symbol_cell_count - offset;
                 uint32_t symbols = job->symbol_count - symbol_offset;
@@ -5924,7 +6182,6 @@ static void *live_decode_worker_main(void *arg)
                 if (job->epoch != live_decode_epoch) {
                     worker_stale = 1;
                     pthread_mutex_unlock(&live_decode_mutex);
-                    free(viterbi_dibits);
                     live_viterbi_stream_reset();
                     live_viterbi_state.valid = 0;
                     rbdvbt_outer_reset_live_stream();
@@ -5939,16 +6196,35 @@ static void *live_decode_worker_main(void *arg)
                 if (symbols == 0u) {
                     symbols = 1u;
                 }
-	                uint32_t chunk_model_symbol = job->model_symbols != NULL && symbol_offset < job->symbol_count ?
+                uint32_t chunk_model_symbol = job->model_symbols != NULL && symbol_offset < job->symbol_count ?
 	                    job->model_symbols[symbol_offset] :
 	                    job->model_symbol_start + symbol_offset;
                 double chunk_t0 = monotonic_seconds();
+                size_t needed_dibits = (count / RBDVBT_DVBT_2K_DATA_CELLS) * RBDVBT_DVBT_2K_DATA_CELLS;
 
-                if (dvbt_qpsk_inner_deinterleave_symbols(&job->symbols[offset],
-                                                         count,
-                                                         chunk_model_symbol,
-                                                         &viterbi_dibits,
-	                                                         &viterbi_dibit_count) != 0) {
+                if (needed_dibits > worker_dibit_cap) {
+                    qpsk_dibit_t *new_dibits = realloc(worker_dibits, needed_dibits * sizeof(*new_dibits));
+
+                    if (new_dibits == NULL) {
+                        if (rbdvbt_log_enabled(RBDVBT_LOG_ERROR)) {
+                            fprintf(stderr, "[fifo1] worker inner_deinterleave_alloc_failed\n");
+                        }
+                        live_viterbi_stream_reset();
+                        live_viterbi_state.valid = 0;
+                        worker_failed = 1;
+                        break;
+                    }
+                    worker_dibits = new_dibits;
+                    worker_dibit_cap = needed_dibits;
+                    viterbi_dibits = worker_dibits;
+                }
+
+                if (dvbt_qpsk_inner_deinterleave_symbols_into(&job->symbols[offset],
+                                                              count,
+                                                              chunk_model_symbol,
+                                                              viterbi_dibits,
+                                                              worker_dibit_cap,
+	                                                          &viterbi_dibit_count) != 0) {
                     if (rbdvbt_log_enabled(RBDVBT_LOG_ERROR)) {
                         fprintf(stderr, "[fifo1] worker inner_deinterleave_failed\n");
                     }
@@ -5964,7 +6240,6 @@ static void *live_decode_worker_main(void *arg)
                 if (job->epoch != live_decode_epoch) {
                     worker_stale = 1;
                     pthread_mutex_unlock(&live_decode_mutex);
-                    free(viterbi_dibits);
                     live_viterbi_stream_reset();
                     live_viterbi_state.valid = 0;
                     rbdvbt_outer_reset_live_stream();
@@ -5986,7 +6261,6 @@ static void *live_decode_worker_main(void *arg)
                     }
                     live_viterbi_stream_reset();
                     live_viterbi_state.valid = 0;
-                    free(viterbi_dibits);
 	                    worker_failed = 1;
 	                    break;
 	                }
@@ -6001,7 +6275,6 @@ static void *live_decode_worker_main(void *arg)
                 }
                 pthread_mutex_unlock(&live_decode_mutex);
                 worker_viterbi_outer_time += monotonic_seconds() - chunk_deint_t1;
-	                free(viterbi_dibits);
                 offset += count;
                 symbol_offset += symbols;
                 processed_symbols += symbols;
@@ -6036,6 +6309,7 @@ static void *live_decode_worker_main(void *arg)
         live_decode_free_job(job);
     }
 
+    free(worker_dibits);
     return NULL;
 }
 
