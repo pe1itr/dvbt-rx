@@ -40,7 +40,7 @@ else
     ffmpeg_custom_map=0
 fi
 ffmpeg_scale="${FFMPEG_SCALE:-960:540}"
-ffmpeg_audio="${FFMPEG_AUDIO:-off}"
+ffmpeg_audio="${FFMPEG_AUDIO:-aac}"
 ffmpeg_audio_bitrate="${FFMPEG_AUDIO_BITRATE:-96k}"
 ffmpeg_video_bitrate="${FFMPEG_VIDEO_BITRATE:-900k}"
 ffmpeg_video_maxrate="${FFMPEG_VIDEO_MAXRATE:-${ffmpeg_video_bitrate}}"
