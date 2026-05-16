@@ -34,6 +34,12 @@ extern long syscall(long number, ...);
 
 #define DEFAULT_PROBE_MAX_SAMPLES 2097152u
 #define STATUS_INPUT_BLOCK_SAMPLES 4096u
+#ifndef RBDVBT_RESAMPLER_PHASES
+#define RBDVBT_RESAMPLER_PHASES 2048
+#endif
+#ifndef RBDVBT_RESAMPLER_RADIUS
+#define RBDVBT_RESAMPLER_RADIUS 12
+#endif
 
 typedef struct {
     float re;
@@ -1831,10 +1837,21 @@ typedef struct {
     uint32_t input_rate_hz;
     uint32_t output_rate_hz;
     double ratio;
+    double step;
     double next_x;
     uint64_t output_seq;
-    complexf_t tail[64];
+    float *coeff_table;
+    int phase_count;
+    int radius;
+    int taps;
+    double cutoff;
+    complexf_t *tail;
     size_t tail_count;
+    size_t tail_cap;
+    complexf_t *work;
+    size_t work_cap;
+    complexf_t *out;
+    size_t out_cap;
 } live_resampler_state_t;
 
 static live_resampler_state_t live_resampler_state;
@@ -1938,6 +1955,121 @@ static int resample_sinc_ratio(const complexf_t *in,
     return 0;
 }
 
+static void live_resampler_release(live_resampler_state_t *st)
+{
+    free(st->coeff_table);
+    free(st->tail);
+    free(st->work);
+    free(st->out);
+    memset(st, 0, sizeof(*st));
+}
+
+static int live_resampler_reserve(complexf_t **ptr, size_t *cap, size_t want)
+{
+    complexf_t *next;
+
+    if (*cap >= want) {
+        return 0;
+    }
+
+    next = realloc(*ptr, want * sizeof(**ptr));
+    if (next == NULL) {
+        return -1;
+    }
+
+    *ptr = next;
+    *cap = want;
+    return 0;
+}
+
+static int live_resampler_build_coeffs(live_resampler_state_t *st)
+{
+    int phase;
+    int t;
+
+    st->phase_count = RBDVBT_RESAMPLER_PHASES;
+    st->radius = RBDVBT_RESAMPLER_RADIUS;
+    st->taps = st->radius * 2 + 1;
+
+    if (st->phase_count <= 0 || st->radius <= 0 || st->taps <= 0) {
+        return -1;
+    }
+
+    st->coeff_table = calloc((size_t)st->phase_count * (size_t)st->taps,
+                             sizeof(*st->coeff_table));
+    if (st->coeff_table == NULL) {
+        return -1;
+    }
+
+    for (phase = 0; phase < st->phase_count; ++phase) {
+        double frac = (double)phase / (double)st->phase_count;
+        double sum = 0.0;
+        float *coeff = &st->coeff_table[(size_t)phase * (size_t)st->taps];
+
+        for (t = 0; t < st->taps; ++t) {
+            double d = frac + (double)st->radius - (double)t;
+            double wpos = (double)t / (double)(st->taps - 1);
+            double window = 0.5 - 0.5 * cos(2.0 * M_PI * wpos);
+            double h = 2.0 * st->cutoff * sinc_norm(2.0 * st->cutoff * d) * window;
+
+            coeff[t] = (float)h;
+            sum += h;
+        }
+
+        if (fabs(sum) > 1e-12) {
+            for (t = 0; t < st->taps; ++t) {
+                coeff[t] = (float)((double)coeff[t] / sum);
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int live_resampler_configure(double ratio,
+                                    uint32_t input_rate_hz,
+                                    uint32_t output_rate_hz)
+{
+    live_resampler_state_t *st = &live_resampler_state;
+
+    if (st->valid &&
+        st->input_rate_hz == input_rate_hz &&
+        st->output_rate_hz == output_rate_hz &&
+        fabs(st->ratio - ratio) <= 1e-12 &&
+        st->phase_count == RBDVBT_RESAMPLER_PHASES &&
+        st->radius == RBDVBT_RESAMPLER_RADIUS) {
+        return 0;
+    }
+
+    live_resampler_release(st);
+    st->valid = 1;
+    st->input_rate_hz = input_rate_hz;
+    st->output_rate_hz = output_rate_hz;
+    st->ratio = ratio;
+    st->step = 1.0 / ratio;
+    st->next_x = 0.0;
+    st->output_seq = 0u;
+    st->cutoff = ratio < 1.0 ? ratio * 0.5 : 0.5;
+
+    if (live_resampler_build_coeffs(st) != 0) {
+        live_resampler_release(st);
+        fprintf(stderr, "failed to allocate live resampler coefficient table\n");
+        return -1;
+    }
+
+    st->tail_cap = (size_t)st->radius;
+    st->tail = calloc(st->tail_cap, sizeof(*st->tail));
+    if (st->tail == NULL) {
+        live_resampler_release(st);
+        fprintf(stderr, "failed to allocate live resampler tail buffer\n");
+        return -1;
+    }
+
+    live_frontend_cursor.valid = 0;
+    live_soft_next_symbol_seq = 0u;
+    return 0;
+}
+
 static int resample_sinc_ratio_live(const complexf_t *in,
                                     size_t in_count,
                                     double ratio,
@@ -1946,132 +2078,135 @@ static int resample_sinc_ratio_live(const complexf_t *in,
                                     complexf_t **out_samples,
                                     size_t *out_count)
 {
-    const int radius = 12;
-    double cutoff = ratio < 1.0 ? ratio * 0.5 : 0.5;
-    complexf_t *work = NULL;
-    complexf_t *out = NULL;
+    live_resampler_state_t *st = &live_resampler_state;
     size_t work_count;
     size_t out_cap;
     size_t out_n = 0;
+    double t0;
+    double t1;
 
     if (in_count == 0 || ratio <= 0.0) {
         return -1;
     }
 
-    if (!live_resampler_state.valid ||
-        live_resampler_state.input_rate_hz != input_rate_hz ||
-        live_resampler_state.output_rate_hz != output_rate_hz ||
-        fabs(live_resampler_state.ratio - ratio) > 1e-12) {
-        memset(&live_resampler_state, 0, sizeof(live_resampler_state));
-        live_resampler_state.valid = 1;
-        live_resampler_state.input_rate_hz = input_rate_hz;
-        live_resampler_state.output_rate_hz = output_rate_hz;
-        live_resampler_state.ratio = ratio;
-        live_resampler_state.next_x = 0.0;
-        live_resampler_state.output_seq = 0u;
-        live_frontend_cursor.valid = 0;
-        live_soft_next_symbol_seq = 0u;
+    if (live_resampler_configure(ratio, input_rate_hz, output_rate_hz) != 0) {
+        return -1;
     }
 
-    work_count = live_resampler_state.tail_count + in_count;
-    work = calloc(work_count, sizeof(*work));
-    if (work == NULL) {
+    t0 = monotonic_seconds();
+    work_count = st->tail_count + in_count;
+    if (live_resampler_reserve(&st->work, &st->work_cap, work_count) != 0) {
         fprintf(stderr, "failed to allocate live resample work buffer\n");
         return -1;
     }
-    if (live_resampler_state.tail_count > 0u) {
-        memcpy(work,
-               live_resampler_state.tail,
-               live_resampler_state.tail_count * sizeof(*work));
+    if (st->tail_count > 0u) {
+        memcpy(st->work,
+               st->tail,
+               st->tail_count * sizeof(*st->work));
     }
-    memcpy(&work[live_resampler_state.tail_count], in, in_count * sizeof(*work));
+    memcpy(&st->work[st->tail_count], in, in_count * sizeof(*st->work));
 
     out_cap = (size_t)ceil(((double)in_count + 128.0) * ratio) + 128u;
     if (out_cap == 0u) {
         out_cap = 1u;
     }
-    out = calloc(out_cap, sizeof(*out));
-    if (out == NULL) {
+    if (live_resampler_reserve(&st->out, &st->out_cap, out_cap) != 0) {
         fprintf(stderr, "failed to allocate live resample buffer\n");
-        free(work);
         return -1;
     }
 
-    while (live_resampler_state.next_x + (double)radius < (double)in_count) {
-        double x = (double)live_resampler_state.tail_count + live_resampler_state.next_x;
+    while (st->next_x + (double)st->radius < (double)in_count) {
+        double x = (double)st->tail_count + st->next_x;
         int center = (int)floor(x);
-        double acc_re = 0.0;
-        double acc_im = 0.0;
-        double acc_w = 0.0;
+        double frac = x - (double)center;
+        int phase = (int)floor(frac * (double)st->phase_count + 0.5);
+        const float *coeff;
+        float acc_re = 0.0f;
+        float acc_im = 0.0f;
+        int base;
+        int t;
 
-        if (out_n >= out_cap) {
-            size_t new_cap = out_cap * 2u;
-            complexf_t *new_out = realloc(out, new_cap * sizeof(*out));
+        if (phase >= st->phase_count) {
+            phase = 0;
+            center++;
+        }
+        coeff = &st->coeff_table[(size_t)phase * (size_t)st->taps];
+        base = center - st->radius;
 
-            if (new_out == NULL) {
-                fprintf(stderr, "failed to grow live resample buffer\n");
-                free(work);
-                free(out);
-                return -1;
+        if (base >= 0 && (size_t)(base + st->taps) <= work_count) {
+            for (t = 0; t < st->taps; ++t) {
+                const complexf_t *sample = &st->work[base + t];
+                float c = coeff[t];
+
+                acc_re += sample->re * c;
+                acc_im += sample->im * c;
             }
-            out = new_out;
-            memset(&out[out_cap], 0, (new_cap - out_cap) * sizeof(*out));
-            out_cap = new_cap;
-        }
+        } else {
+            float acc_w = 0.0f;
 
-        for (int k = center - radius; k <= center + radius; ++k) {
-            double d;
-            double wpos;
-            double window;
-            double h;
+            for (t = 0; t < st->taps; ++t) {
+                int idx = base + t;
+                float c;
 
-            if (k < 0 || k >= (int)work_count) {
-                continue;
+                if (idx < 0 || (size_t)idx >= work_count) {
+                    continue;
+                }
+                c = coeff[t];
+                acc_re += st->work[idx].re * c;
+                acc_im += st->work[idx].im * c;
+                acc_w += c;
             }
-
-            d = x - (double)k;
-            wpos = ((double)(k - (center - radius))) / (double)(radius * 2);
-            window = 0.5 - 0.5 * cos(2.0 * M_PI * wpos);
-            h = 2.0 * cutoff * sinc_norm(2.0 * cutoff * d) * window;
-
-            acc_re += (double)work[k].re * h;
-            acc_im += (double)work[k].im * h;
-            acc_w += h;
+            if (fabsf(acc_w) > 1e-6f) {
+                acc_re /= acc_w;
+                acc_im /= acc_w;
+            }
         }
 
-        if (fabs(acc_w) > 1e-12) {
-            out[out_n].re = (float)(acc_re / acc_w);
-            out[out_n].im = (float)(acc_im / acc_w);
-        }
+        st->out[out_n].re = acc_re;
+        st->out[out_n].im = acc_im;
         out_n++;
-        live_resampler_state.next_x += 1.0 / ratio;
+        st->next_x += st->step;
     }
 
-    live_resampler_state.next_x -= (double)in_count;
-    live_resampler_state.tail_count = in_count < (sizeof(live_resampler_state.tail) / sizeof(live_resampler_state.tail[0])) ?
-        in_count :
-        (sizeof(live_resampler_state.tail) / sizeof(live_resampler_state.tail[0]));
-    if (live_resampler_state.tail_count > 0u) {
-        memcpy(live_resampler_state.tail,
-               &in[in_count - live_resampler_state.tail_count],
-               live_resampler_state.tail_count * sizeof(live_resampler_state.tail[0]));
+    st->next_x -= (double)in_count;
+    st->tail_count = in_count < st->tail_cap ? in_count : st->tail_cap;
+    if (st->tail_count > 0u) {
+        memcpy(st->tail,
+               &in[in_count - st->tail_count],
+               st->tail_count * sizeof(st->tail[0]));
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
         fprintf(stderr,
                 "[resample] live-state out_abs=%llu tail=%zu next_x=%.6f emitted=%zu\n",
-                (unsigned long long)live_resampler_state.output_seq,
-                live_resampler_state.tail_count,
-                live_resampler_state.next_x,
+                (unsigned long long)st->output_seq,
+                st->tail_count,
+                st->next_x,
                 out_n);
     }
 
-    free(work);
-    *out_samples = out;
+    t1 = monotonic_seconds();
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        double time_ms = (t1 - t0) * 1000.0;
+        double rf_ms = (double)in_count * 1000.0 / (double)input_rate_hz;
+        double load_pct = rf_ms > 0.0 ? (time_ms * 100.0 / rf_ms) : 0.0;
+
+        fprintf(stderr,
+                "[resampler] in=%zu out=%zu taps=%d phases=%d time_ms=%.3f rf_ms=%.3f load_pct=%.1f\n",
+                in_count,
+                out_n,
+                st->taps,
+                st->phase_count,
+                time_ms,
+                rf_ms,
+                load_pct);
+    }
+
+    *out_samples = st->out;
     *out_count = out_n;
-    live_resampled_chunk_start_abs = live_resampler_state.output_seq;
+    live_resampled_chunk_start_abs = st->output_seq;
     live_resampled_chunk_count = out_n;
-    live_resampler_state.output_seq += out_n;
+    st->output_seq += out_n;
     return out_n > 0u ? 0 : -1;
 }
 
@@ -8645,6 +8780,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     uint32_t sync_symbols;
     uint32_t start;
     int used_live_sync_hint = 0;
+    int samples_owned = 1;
     complexf_t corr;
     double score;
     double cfo_hz;
@@ -8724,6 +8860,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
 
         free(samples);
         samples = resampled;
+        samples_owned = 1;
         count = resampled_count;
         effective_cfg.sample_rate_hz *= 4u;
 
@@ -8754,6 +8891,8 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
 
         target_rate_hz = (uint32_t)lrint(target_rate);
         if (effective_cfg.live_mode) {
+            complexf_t *input_samples = samples;
+
             if (resample_sinc_ratio_live(samples,
                                          count,
                                          ratio,
@@ -8763,11 +8902,15 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                                          &resampled_count) != 0) {
                 goto done;
             }
+            free(input_samples);
+            samples_owned = 0;
         } else if (resample_sinc_ratio(samples, count, ratio, &resampled, &resampled_count) != 0) {
             goto done;
+        } else {
+            free(samples);
+            samples_owned = 1;
         }
 
-        free(samples);
         samples = resampled;
         count = resampled_count;
         effective_cfg.sample_rate_hz = target_rate_hz;
@@ -9043,7 +9186,9 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     }
 
 done:
-    free(samples);
+    if (samples_owned) {
+        free(samples);
+    }
     rbdvbt_visualizer_close(visualizer_udp);
     visualizer_udp = NULL;
     return rc;
