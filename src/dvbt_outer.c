@@ -156,6 +156,7 @@ typedef struct {
     uint32_t lock_jobs;
     uint32_t fail_jobs;
     uint32_t hard_fail_jobs;
+    uint32_t productive_fail_jobs;
     uint32_t low_pilot_jobs;
     int probation_lock;
 } live_grdvbt_outer_state_t;
@@ -3310,6 +3311,108 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
                                            lock_state);
 }
 
+static int live_grdvbt_outer_realign_current(const uint8_t *inner,
+                                             size_t inner_count,
+                                             const uint8_t *scramble,
+                                             rbdvbt_fifo_t *fifo3,
+                                             ts_output_gate_t *gate,
+                                             ts_validator_t *validator,
+                                             ts_output_sink_t *sink,
+                                             const char *ts_path,
+                                             const rbdvbt_status_context_t *status,
+                                             const outer_scan_policy_t *base_policy,
+                                             uint32_t *written,
+                                             uint32_t *rs_bad,
+                                             uint32_t *rs_ok,
+                                             uint32_t *rs_corrected,
+                                             uint32_t *rs_corrected_bytes,
+                                             uint32_t *rs_uncorrectable,
+                                             uint32_t *processed_blocks,
+                                             rx_lock_state_t *lock_state)
+{
+    outer_scan_policy_t policy;
+    outer_candidate_t best;
+    int probation_lock = 0;
+    size_t drop_deint;
+
+    if (inner_count == 0u || base_policy == NULL) {
+        return 0;
+    }
+
+    policy = *base_policy;
+    policy.min_pending_bytes = 0u;
+    policy.min_rs_ok = 1u;
+    if (policy.min_sync_ok > 8u) {
+        policy.min_sync_ok = 8u;
+    }
+    if (policy.min_sync_only_ok > 32u) {
+        policy.min_sync_only_ok = 32u;
+    }
+
+    memset(&best, 0, sizeof(best));
+    if (scan_outer_alignment_with_policy(inner, inner_count, &best, &policy) != 0 ||
+        best.rs_ok == 0u ||
+        !outer_candidate_is_acquirable(&best, &policy, &probation_lock)) {
+        if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+            fprintf(stderr,
+                    "[outer-state] local_realign failed rs_ok=%u/%u sync_ok=%u/%u sync_only=%u blocks=%u reason=%s\n",
+                    best.rs_ok,
+                    policy.min_rs_ok,
+                    best.sync_ok,
+                    policy.min_sync_ok,
+                    policy.min_sync_only_ok,
+                    best.blocks,
+                    best.rs_ok == 0u ? "no-rs-clean" : "threshold");
+        }
+        return 0;
+    }
+
+    live_grdvbt_outer_reset();
+    if (outer_deinterleaver_init(&live_grdvbt_outer.deinterleaver) != 0) {
+        fprintf(stderr, "[outer] failed to initialize live gr-dvbt deinterleaver during local realign\n");
+        return -1;
+    }
+    live_grdvbt_outer.deinterleaver_ready = 1;
+    live_grdvbt_outer.valid = 1;
+    live_grdvbt_outer.branch = 0u;
+    live_grdvbt_outer.block_phase = best.block_phase;
+    live_grdvbt_outer.lock_jobs++;
+    live_grdvbt_outer.probation_lock = probation_lock;
+    drop_deint = OUTER_TRANSIENT + best.rs_phase;
+
+    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+        fprintf(stderr,
+                "[outer-state] local_realign acquired grdvbt_stream deint_phase=%u rs_phase=%u block_phase=%u drop_deint=%zu rs_probe_ok=%u sync_ok=%u probation=%d\n",
+                best.deint_phase,
+                best.rs_phase,
+                best.block_phase,
+                drop_deint,
+                best.rs_ok,
+                best.sync_ok,
+                probation_lock);
+    }
+
+    return live_grdvbt_outer_process_bytes(inner,
+                                           inner_count,
+                                           best.deint_phase,
+                                           drop_deint,
+                                           scramble,
+                                           fifo3,
+                                           gate,
+                                           validator,
+                                           sink,
+                                           ts_path,
+                                           status,
+                                           written,
+                                           rs_bad,
+                                           rs_ok,
+                                           rs_corrected,
+                                           rs_corrected_bytes,
+                                           rs_uncorrectable,
+                                           processed_blocks,
+                                           lock_state);
+}
+
 static uint32_t outer_quality_score(const ts_validator_t *v,
                                     uint32_t rs_uncorrectable,
                                     uint32_t rs_corrected,
@@ -3594,6 +3697,40 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             rc = -1;
             goto done;
         }
+        if (processed_blocks > 0u &&
+            rs_ok == 0u &&
+            written == 0u &&
+            rs_uncorrectable > 0u) {
+            if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                fprintf(stderr,
+                        "[outer-state] local_realign attempt after nonproductive degraded job blocks=%u rs_uncorrectable=%u rs_buffer=%u\n",
+                        processed_blocks,
+                        rs_uncorrectable,
+                        live_grdvbt_outer.rs_count);
+            }
+            if (live_grdvbt_outer_realign_current(inner,
+                                                  inner_count,
+                                                  scramble,
+                                                  &fifo3,
+                                                  gate,
+                                                  &validator,
+                                                  &sink,
+                                                  ts_path,
+                                                  status,
+                                                  &live_policy,
+                                                  &written,
+                                                  &rs_bad,
+                                                  &rs_ok,
+                                                  &rs_corrected,
+                                                  &rs_corrected_bytes,
+                                                  &rs_uncorrectable,
+                                                  &processed_blocks,
+                                                  &lock_state) != 0) {
+                lock_state = RX_LOCK_RELOCK;
+                rc = -1;
+                goto done;
+            }
+        }
 
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
             (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) &&
@@ -3617,29 +3754,41 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
 
         if (processed_blocks > 0u &&
             (rs_ok == 0u || rs_uncorrectable >= rs_ok)) {
+            int productive_degraded = written > 0u || rs_ok > 0u || validator.packets > 0u;
             int hard_cadence_fail = processed_blocks >= LIVE_GRDVBT_HARD_FAIL_BLOCKS &&
                 rs_ok == 0u &&
                 written == 0u;
 
-            live_grdvbt_outer.fail_jobs++;
+            if (productive_degraded) {
+                live_grdvbt_outer.productive_fail_jobs++;
+                live_grdvbt_outer.hard_fail_jobs = 0u;
+                if (live_grdvbt_outer.productive_fail_jobs > 2u) {
+                    live_grdvbt_outer.fail_jobs++;
+                }
+            } else {
+                live_grdvbt_outer.productive_fail_jobs = 0u;
+                live_grdvbt_outer.fail_jobs++;
+            }
             if (hard_cadence_fail) {
                 live_grdvbt_outer.hard_fail_jobs++;
-            } else {
+            } else if (!productive_degraded) {
                 live_grdvbt_outer.hard_fail_jobs = 0u;
             }
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                 fprintf(stderr,
-                        "[outer-state] degraded grdvbt_stream fail_jobs=%u/%u hard_fail_jobs=%u/%u rs_ok=%u rs_uncorrectable=%u written=%u rs_buffer=%u\n",
+                        "[outer-state] degraded grdvbt_stream fail_jobs=%u/%u hard_fail_jobs=%u/%u productive_fail_jobs=%u productive=%d rs_ok=%u rs_uncorrectable=%u written=%u rs_buffer=%u\n",
                         live_grdvbt_outer.fail_jobs,
                         live_policy.soft_fail_limit,
                         live_grdvbt_outer.hard_fail_jobs,
                         live_policy.hard_fail_limit,
+                        live_grdvbt_outer.productive_fail_jobs,
+                        productive_degraded,
                         rs_ok,
                         rs_uncorrectable,
                         written,
                         live_grdvbt_outer.rs_count);
             }
-            lock_state = gate->stdout_enabled ? RX_LOCK_DEGRADED : RX_LOCK_RELOCK;
+            lock_state = gate->stdout_enabled || productive_degraded ? RX_LOCK_DEGRADED : RX_LOCK_RELOCK;
             if ((hard_cadence_fail && live_grdvbt_outer.hard_fail_jobs >= live_policy.hard_fail_limit) ||
                 live_grdvbt_outer.fail_jobs >= live_policy.soft_fail_limit) {
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
@@ -3663,6 +3812,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         } else if (processed_blocks > 0u) {
             live_grdvbt_outer.fail_jobs = 0u;
             live_grdvbt_outer.hard_fail_jobs = 0u;
+            live_grdvbt_outer.productive_fail_jobs = 0u;
             live_grdvbt_outer.low_pilot_jobs = 0u;
             live_grdvbt_outer.probation_lock = 0;
             live_grdvbt_outer.lock_jobs++;

@@ -78,6 +78,7 @@ typedef struct {
 } live_status_hold_t;
 
 static live_status_hold_t live_status_hold;
+static uint32_t live_low_pilot_hold_count;
 static rbdvbt_visualizer_t *visualizer_udp;
 static double visualizer_last_spectrum_time;
 static double visualizer_last_constellation_time;
@@ -5356,6 +5357,7 @@ static uint32_t live_decode_invalidate_queued(const char *reason)
 #define LIVE_METADATA_PILOT_LOCK_MIN 0.45
 #define LIVE_METADATA_PILOT_LOCK_STRONG 0.55
 #define LIVE_DECODE_PILOT_LOCK_MIN 0.70
+#define LIVE_LOW_PILOT_HOLD_MAX 1u
 #define LIVE_GRDVBT_TRACK_SCORE_MIN 0.70
 #define LIVE_METADATA_SEARCH_RADIUS 96u
 #define LIVE_METADATA_REFINE_SYMBOLS 4u
@@ -8305,6 +8307,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         }
         if (!frontend_continuous) {
             frame_symbol_seq_start = live_soft_next_symbol_seq;
+            live_low_pilot_hold_count = 0u;
             live_viterbi_stream_reset();
             live_viterbi_state.valid = 0;
             (void)live_decode_invalidate_queued("frontend-discontinuity");
@@ -8424,9 +8427,31 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
 
         if (cfg->live_mode) {
             if (avg_pilot_lock < LIVE_DECODE_PILOT_LOCK_MIN) {
+                int hold_low_pilot =
+                    live_status_hold.valid &&
+                    live_frontend_cursor.valid &&
+                    live_symbol_continuity_ok &&
+                    avg_pilot_lock >= LIVE_METADATA_PILOT_LOCK_MIN &&
+                    live_low_pilot_hold_count < LIVE_LOW_PILOT_HOLD_MAX;
+
                 live_health_note_low_pilot();
                 live_decode_status_snapshot(&status);
                 rbdvbt_status_publish_idle(&status, "pilot-drop", status.input_samples);
+                if (hold_low_pilot) {
+                    live_low_pilot_hold_count++;
+                    if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                        fprintf(stderr,
+                                "[dvbt2k] holding weak live chunk avg_pilot_lock=%.5f decode_min=%.2f metadata_min=%.2f snr=%.2fdB hold=%u/%u; preserving inner continuity\n",
+                                avg_pilot_lock,
+                                LIVE_DECODE_PILOT_LOCK_MIN,
+                                LIVE_METADATA_PILOT_LOCK_MIN,
+                                snr_db,
+                                live_low_pilot_hold_count,
+                                LIVE_LOW_PILOT_HOLD_MAX);
+                    }
+                    rc = 0;
+                    goto done;
+                }
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                     fprintf(stderr,
                             "[dvbt2k] dropping weak live chunk avg_pilot_lock=%.5f decode_min=%.2f snr=%.2fdB; resetting inner continuity\n",
@@ -8449,6 +8474,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 rc = 0;
                 goto done;
             }
+            live_low_pilot_hold_count = 0u;
             live_status_hold.valid = 1;
             live_status_hold.pilot_lock = avg_pilot_lock;
             live_status_hold.snr_db = snr_db;
