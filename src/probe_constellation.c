@@ -5311,6 +5311,29 @@ static uint32_t live_decode_invalidate_queued(const char *reason)
 #define LIVE_GRDVBT_TRACK_RADIUS 8u
 #define LIVE_AFC_BIN_SEARCH_RADIUS 3
 #define LIVE_AFC_MAX_BIN_STEP 1
+#define DVBT2K_PILOT_SCAN_HZ 12000.0
+
+static int dvbt2k_pilot_scan_bin_limit(uint32_t sample_rate_hz)
+{
+    double bin_hz;
+    int limit;
+
+    if (sample_rate_hz == 0u) {
+        return 96;
+    }
+    bin_hz = (double)sample_rate_hz / (double)RBDVBT_DVBT_2K_FFT_SIZE;
+    if (bin_hz <= 0.0) {
+        return 96;
+    }
+    limit = (int)ceil(DVBT2K_PILOT_SCAN_HZ / bin_hz);
+    if (limit < 64) {
+        limit = 64;
+    }
+    if (limit > 192) {
+        limit = 192;
+    }
+    return limit;
+}
 #define LIVE_AFC_TREND_CONFIRM_CHUNKS 2u
 
 static void qpsk_axis_bit_costs(float value, float costs[2])
@@ -7692,8 +7715,9 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     demod_t0 = monotonic_seconds();
     {
         uint32_t scan_symbols = max_symbols > 24u ? 24u : max_symbols;
-        int bin_first = -64;
-        int bin_last = 64;
+        int scan_bin_limit = dvbt2k_pilot_scan_bin_limit(cfg->sample_rate_hz);
+        int bin_first = -scan_bin_limit;
+        int bin_last = scan_bin_limit;
         int conjugate_first = 0;
         int conjugate_last = 1;
         int phase_first = 0;
@@ -7707,11 +7731,11 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 if (cfg->afc_enabled) {
                     bin_first = live_frontend_cursor.bin_shift - LIVE_AFC_BIN_SEARCH_RADIUS;
                     bin_last = live_frontend_cursor.bin_shift + LIVE_AFC_BIN_SEARCH_RADIUS;
-                    if (bin_first < -64) {
-                        bin_first = -64;
+                    if (bin_first < -scan_bin_limit) {
+                        bin_first = -scan_bin_limit;
                     }
-                    if (bin_last > 64) {
-                        bin_last = 64;
+                    if (bin_last > scan_bin_limit) {
+                        bin_last = scan_bin_limit;
                     }
                 } else {
                     bin_first = live_frontend_cursor.bin_shift;
@@ -7720,8 +7744,8 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 conjugate_first = live_frontend_cursor.conjugate;
                 conjugate_last = conjugate_first;
             } else {
-                bin_first = -64;
-                bin_last = 64;
+                bin_first = -scan_bin_limit;
+                bin_last = scan_bin_limit;
             }
         }
 
@@ -7764,11 +7788,11 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             int adv_bin_first = live_frontend_cursor.bin_shift - LIVE_AFC_BIN_SEARCH_RADIUS;
             int adv_bin_last = live_frontend_cursor.bin_shift + LIVE_AFC_BIN_SEARCH_RADIUS;
 
-            if (adv_bin_first < -64) {
-                adv_bin_first = -64;
+            if (adv_bin_first < -scan_bin_limit) {
+                adv_bin_first = -scan_bin_limit;
             }
-            if (adv_bin_last > 64) {
-                adv_bin_last = 64;
+            if (adv_bin_last > scan_bin_limit) {
+                adv_bin_last = scan_bin_limit;
             }
             if (scan_dvbt2k_pilot_alignment(cfg,
                                             samples,
