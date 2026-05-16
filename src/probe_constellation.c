@@ -1623,18 +1623,25 @@ static void live_iq_ring_push(const rbdvbt_complex_t *samples, size_t count)
     }
 
     while (count > 0u) {
-        size_t free_count;
+        size_t drop_count;
         size_t write_count;
         size_t n;
 
-        while (live_iq_ring.count >= live_iq_ring.cap) {
-            live_iq_ring.producer_waits++;
-            live_iq_ring.producer_wait_samples += (uint64_t)count;
-            pthread_cond_wait(&live_iq_ring.not_full, &live_iq_ring.mutex);
+        if (count > live_iq_ring.cap) {
+            drop_count = count - live_iq_ring.cap;
+            samples += drop_count;
+            count -= drop_count;
+            live_iq_ring.overrun_samples += (uint64_t)drop_count;
         }
 
-        free_count = live_iq_ring.cap - live_iq_ring.count;
-        write_count = count < free_count ? count : free_count;
+        write_count = count;
+        drop_count = 0u;
+        if (live_iq_ring.cap - live_iq_ring.count < write_count) {
+            drop_count = write_count - (live_iq_ring.cap - live_iq_ring.count);
+            live_iq_ring.head = (live_iq_ring.head + drop_count) % live_iq_ring.cap;
+            live_iq_ring.count -= drop_count;
+            live_iq_ring.overrun_samples += (uint64_t)drop_count;
+        }
         for (n = 0; n < write_count; ++n) {
             size_t pos = (live_iq_ring.head + live_iq_ring.count) % live_iq_ring.cap;
 
@@ -1726,6 +1733,7 @@ static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples
 static void live_iq_ring_snapshot(size_t *fill,
                                   size_t *capacity,
                                   size_t *max_fill,
+                                  uint64_t *dropped_samples,
                                   uint64_t *producer_waits,
                                   uint64_t *producer_wait_samples)
 {
@@ -1738,6 +1746,9 @@ static void live_iq_ring_snapshot(size_t *fill,
     }
     if (max_fill != NULL) {
         *max_fill = live_iq_ring.max_count;
+    }
+    if (dropped_samples != NULL) {
+        *dropped_samples = live_iq_ring.overrun_samples;
     }
     if (producer_waits != NULL) {
         *producer_waits = live_iq_ring.producer_waits;
@@ -4844,17 +4855,19 @@ static void live_health_maybe_emit_locked(double now)
         size_t iq_fill = 0u;
         size_t iq_capacity = 0u;
         size_t iq_max_fill = 0u;
+        uint64_t iq_drops = 0u;
         uint64_t iq_waits = 0u;
         uint64_t iq_wait_samples = 0u;
 
         live_iq_ring_snapshot(&iq_fill,
                               &iq_capacity,
                               &iq_max_fill,
+                              &iq_drops,
                               &iq_waits,
                               &iq_wait_samples);
 
         fprintf(stderr,
-                "[health] %.1fs chunks=%u lock_min=%.5f lock_avg=%.5f snr_min=%.2fdB snr_avg=%.2fdB cont_bad=%u max_delta=%llu max_phase_delta=%llu fifo_max=%u fifo_drops=%u fifo_drop_symbols=%u low_pilot=%u packets=%u rs_uncorr=%u cc=%u tei=%u sync_bad=%u iq_fill=%zu/%zu iq_max=%zu iq_waits=%llu iq_wait_samples=%llu outer_acquire_pending=%zu outer_state=%s rs_bad=%u rs_corrected=%u rs_uncorrectable=%u written_packets=%u\n",
+                "[health] %.1fs chunks=%u lock_min=%.5f lock_avg=%.5f snr_min=%.2fdB snr_avg=%.2fdB cont_bad=%u max_delta=%llu max_phase_delta=%llu fifo_max=%u fifo_drops=%u fifo_drop_symbols=%u low_pilot=%u packets=%u rs_uncorr=%u cc=%u tei=%u sync_bad=%u iq_fill=%zu/%zu iq_max=%zu iq_drops=%llu iq_waits=%llu iq_wait_samples=%llu outer_acquire_pending=%zu outer_state=%s rs_bad=%u rs_corrected=%u rs_uncorrectable=%u written_packets=%u\n",
                 elapsed,
                 live_health.chunks,
                 lock_min,
@@ -4876,6 +4889,7 @@ static void live_health_maybe_emit_locked(double now)
                 iq_fill,
                 iq_capacity,
                 iq_max_fill,
+                (unsigned long long)iq_drops,
                 (unsigned long long)iq_waits,
                 (unsigned long long)iq_wait_samples,
                 live_health.outer_acquire_pending,
