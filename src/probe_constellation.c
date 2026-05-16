@@ -83,6 +83,7 @@ static double visualizer_last_spectrum_time;
 static double visualizer_last_constellation_time;
 
 static void live_decode_status_snapshot(rbdvbt_status_context_t *status);
+static void gui_spectrum_submit(const complexf_t *samples, size_t sample_count, uint32_t sample_rate_hz);
 
 static void live_status_hold_clear(void)
 {
@@ -148,6 +149,8 @@ static live_iq_ring_t live_iq_ring = {
 #define GUI_SPECTRUM_NFFT 4096u
 #define GUI_SPECTRUM_W 760u
 #define GUI_SPECTRUM_H 300u
+#define GUI_REFRESH_NS 50000000L
+#define GUI_CONSTELLATION_SUBMIT_SYMBOLS 4u
 
 typedef struct {
     pthread_mutex_t mutex;
@@ -279,6 +282,24 @@ static double monotonic_seconds(void)
 }
 
 #ifdef RBDVBT_HAVE_X11
+static int gui_x11_init_threads(void)
+{
+    static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    static int initialized;
+    static int ok;
+
+    pthread_mutex_lock(&mutex);
+    if (!initialized) {
+        ok = XInitThreads();
+        if (!ok) {
+            fprintf(stderr, "[gui] failed to initialize X11 thread support; --gui ignored\n");
+        }
+        initialized = 1;
+    }
+    pthread_mutex_unlock(&mutex);
+    return ok ? 0 : -1;
+}
+
 static unsigned long gui_alloc_color(Display *display, int screen, const char *name, unsigned long fallback)
 {
     XColor exact;
@@ -397,7 +418,7 @@ static void *gui_constellation_thread_main(void *arg)
 
             gettimeofday(&now, NULL);
             deadline.tv_sec = now.tv_sec;
-            deadline.tv_nsec = (long)now.tv_usec * 1000L + 50000000L;
+            deadline.tv_nsec = (long)now.tv_usec * 1000L + GUI_REFRESH_NS;
         }
         if (deadline.tv_nsec >= 1000000000L) {
             deadline.tv_sec++;
@@ -602,7 +623,7 @@ static void *gui_fifo_thread_main(void *arg)
 
             gettimeofday(&now, NULL);
             deadline.tv_sec = now.tv_sec;
-            deadline.tv_nsec = (long)now.tv_usec * 1000L + 100000000L;
+            deadline.tv_nsec = (long)now.tv_usec * 1000L + GUI_REFRESH_NS;
         }
         if (deadline.tv_nsec >= 1000000000L) {
             deadline.tv_sec++;
@@ -836,7 +857,7 @@ static void *gui_spectrum_thread_main(void *arg)
 
             gettimeofday(&now, NULL);
             deadline.tv_sec = now.tv_sec;
-            deadline.tv_nsec = (long)now.tv_usec * 1000L + 100000000L;
+            deadline.tv_nsec = (long)now.tv_usec * 1000L + GUI_REFRESH_NS;
         }
         if (deadline.tv_nsec >= 1000000000L) {
             deadline.tv_sec++;
@@ -1072,6 +1093,9 @@ static int gui_fifo_start(int enabled)
 #ifndef RBDVBT_HAVE_X11
     return 0;
 #else
+    if (gui_x11_init_threads() != 0) {
+        return -1;
+    }
     pthread_mutex_lock(&gui_fifo.mutex);
     if (gui_fifo.started || gui_fifo.enabled) {
         pthread_mutex_unlock(&gui_fifo.mutex);
@@ -1108,6 +1132,9 @@ static int gui_spectrum_start(int enabled)
 #ifndef RBDVBT_HAVE_X11
     return 0;
 #else
+    if (gui_x11_init_threads() != 0) {
+        return -1;
+    }
     pthread_mutex_lock(&gui_spectrum.mutex);
     if (gui_spectrum.started || gui_spectrum.enabled) {
         pthread_mutex_unlock(&gui_spectrum.mutex);
@@ -1146,6 +1173,9 @@ static int gui_constellation_start(int enabled)
     }
     return 0;
 #else
+    if (gui_x11_init_threads() != 0) {
+        return -1;
+    }
     pthread_mutex_lock(&gui_constellation.mutex);
     if (gui_constellation.started || gui_constellation.enabled) {
         pthread_mutex_unlock(&gui_constellation.mutex);
@@ -1521,10 +1551,15 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
     }
 }
 
-static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples);
+static int live_iq_ring_start(rbdvbt_input_format_t format,
+                              size_t chunk_samples,
+                              int gui_enabled,
+                              uint32_t sample_rate_hz);
 static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_delta);
 static int live_iq_discontinuity_pending;
 static uint64_t live_iq_overrun_pending_samples;
+static int live_iq_ring_gui_enabled;
+static uint32_t live_iq_ring_sample_rate_hz;
 
 static int read_probe_samples(const rbdvbt_config_t *cfg,
                               complexf_t **out_samples,
@@ -1544,7 +1579,11 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
         fprintf(stderr, "failed to allocate probe sample buffer\n");
         return -1;
     }
-    if (cfg->live_mode && live_iq_ring_start(cfg->input_format, (size_t)sample_limit) != 0) {
+    if (cfg->live_mode &&
+        live_iq_ring_start(cfg->input_format,
+                           (size_t)sample_limit,
+                           cfg->gui,
+                           cfg->sample_rate_hz) != 0) {
         free(samples);
         return -1;
     }
@@ -1604,7 +1643,7 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
                 stats_pos += stats_n;
             }
         }
-        if (cfg->gui) {
+        if (cfg->gui && !cfg->live_mode) {
             gui_spectrum_submit(&samples[count], got, cfg->sample_rate_hz);
         }
         visualizer_submit_spectrum_iq(&samples[count], got, cfg->sample_rate_hz);
@@ -1685,10 +1724,22 @@ static void *live_iq_ring_reader_main(void *arg)
             return NULL;
         }
         live_iq_ring_push(block, got);
+        if (live_iq_ring_gui_enabled) {
+            complexf_t gui_block[4096];
+
+            for (size_t i = 0u; i < got; ++i) {
+                gui_block[i].re = block[i].i;
+                gui_block[i].im = block[i].q;
+            }
+            gui_spectrum_submit(gui_block, got, live_iq_ring_sample_rate_hz);
+        }
     }
 }
 
-static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples)
+static int live_iq_ring_start(rbdvbt_input_format_t format,
+                              size_t chunk_samples,
+                              int gui_enabled,
+                              uint32_t sample_rate_hz)
 {
     size_t cap = chunk_samples * 4u;
 
@@ -1720,6 +1771,8 @@ static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples
     live_iq_ring.overrun_samples = 0u;
     live_iq_ring.producer_waits = 0u;
     live_iq_ring.producer_wait_samples = 0u;
+    live_iq_ring_gui_enabled = gui_enabled;
+    live_iq_ring_sample_rate_hz = sample_rate_hz;
     live_iq_ring.started = 1;
     pthread_mutex_unlock(&live_iq_ring.mutex);
 
@@ -7636,6 +7689,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     size_t viterbi_symbol_cell_count = 0;
     size_t viterbi_symbol_cell_cap = 0;
     uint32_t viterbi_model_symbol_count = 0;
+    size_t gui_constellation_submit_cell = 0u;
     uint32_t max_symbols = cfg->probe_symbols;
     uint32_t total_symbols = cfg->probe_symbols;
     uint32_t skip_symbols = 0;
@@ -8116,6 +8170,21 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             if (demap_out == NULL) {
                 demap_dibits += RBDVBT_DVBT_2K_DATA_CELLS;
             }
+            if (cfg->gui && cfg->live_mode &&
+                viterbi_symbol_cell_count - gui_constellation_submit_cell >=
+                    (size_t)GUI_CONSTELLATION_SUBMIT_SYMBOLS * RBDVBT_DVBT_2K_DATA_CELLS) {
+                double snr_now = evm_count > 0 && evm_error_sum > 0.0 ?
+                    10.0 * log10((double)evm_count / evm_error_sum) :
+                    0.0;
+
+                gui_constellation_submit(&viterbi_symbols[gui_constellation_submit_cell],
+                                         viterbi_symbol_cell_count - gui_constellation_submit_cell,
+                                         "QPSK",
+                                         snr_now,
+                                         pilot_lock,
+                                         cfo_hz);
+                gui_constellation_submit_cell = viterbi_symbol_cell_count;
+            }
         }
 
         pilot_lock_sum += pilot_lock;
@@ -8334,9 +8403,13 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         status.gui_enabled = cfg->gui;
         live_decode_status_snapshot(&status);
 
-        if (cfg->gui) {
-            gui_constellation_submit(viterbi_symbols,
-                                     viterbi_symbol_cell_count,
+        if (cfg->gui && (!cfg->live_mode ||
+                         gui_constellation_submit_cell < viterbi_symbol_cell_count)) {
+            size_t submit_offset = cfg->live_mode ? gui_constellation_submit_cell : 0u;
+            size_t submit_count = viterbi_symbol_cell_count - submit_offset;
+
+            gui_constellation_submit(&viterbi_symbols[submit_offset],
+                                     submit_count,
                                      "QPSK",
                                      snr_db,
                                      avg_pilot_lock,

@@ -385,6 +385,7 @@ static int live_ts_file_ready;
 #define GUI_STATUS_H 270u
 #define GUI_STATUS_FEC_MISS_LIMIT 6u
 #define GUI_STATUS_TS_MISS_LIMIT 12u
+#define GUI_STATUS_REFRESH_NS 50000000L
 
 typedef struct {
     pthread_mutex_t mutex;
@@ -577,7 +578,7 @@ static void *gui_status_thread_main(void *arg)
 
             gettimeofday(&now, NULL);
             deadline.tv_sec = now.tv_sec;
-            deadline.tv_nsec = (long)now.tv_usec * 1000L + 200000000L;
+            deadline.tv_nsec = (long)now.tv_usec * 1000L + GUI_STATUS_REFRESH_NS;
         }
         if (deadline.tv_nsec >= 1000000000L) {
             deadline.tv_sec++;
