@@ -5578,6 +5578,11 @@ static uint32_t viterbi_traceback_bytes(rbdvbt_fec_t fec)
     return 9u;
 }
 
+static int live_viterbi_stream_supported(rbdvbt_fec_t fec)
+{
+    return fec == RBDVBT_FEC_1_2 || fec == RBDVBT_FEC_2_3;
+}
+
 static void live_viterbi_stream_reset(void)
 {
     live_viterbi_stream.valid = 0;
@@ -6394,7 +6399,7 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
                 if (status != NULL && status->live_mode) {
                     viterbi_t0 = monotonic_seconds();
                 }
-		        if (status != NULL && status->live_mode) {
+		        if (status != NULL && status->live_mode && live_viterbi_stream_supported(fec)) {
 		            if (live_viterbi_stream_decode_bytes(fec,
 	                                                 dibits,
 	                                                 dibit_count,
@@ -6433,6 +6438,10 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
 	                        byte_count);
 	            }
 	        } else {
+                if (status != NULL && status->live_mode) {
+                    live_viterbi_stream_reset();
+                    live_viterbi_state.valid = 0;
+                }
 	            if (decode_viterbi_bytes(fec,
 	                                     dibits,
 	                                     dibit_count,
