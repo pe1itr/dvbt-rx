@@ -178,9 +178,101 @@ typedef struct {
     uint32_t written_packets;
 } live_status_snapshot_t;
 
+typedef struct {
+    int valid;
+    uint32_t session_id;
+    uint32_t restarts;
+    time_t started_unix;
+    uint64_t packets;
+    uint64_t written_packets;
+    uint64_t sync_bad;
+    uint64_t transport_errors;
+    uint64_t cc_errors;
+    uint64_t pat_packets;
+    uint64_t pmt_packets;
+    uint64_t sdt_packets;
+    uint64_t rs_bad;
+    uint64_t rs_ok;
+    uint64_t rs_corrected;
+    uint64_t rs_corrected_bytes;
+    uint64_t rs_uncorrectable;
+    uint32_t last_packets;
+    uint32_t last_written_packets;
+    uint32_t last_sync_bad;
+    uint32_t last_transport_errors;
+    uint32_t last_cc_errors;
+    uint32_t last_pat_packets;
+    uint32_t last_pmt_packets;
+    uint32_t last_sdt_packets;
+    uint32_t last_rs_bad;
+    uint32_t last_rs_ok;
+    uint32_t last_rs_corrected;
+    uint32_t last_rs_corrected_bytes;
+    uint32_t last_rs_uncorrectable;
+} live_ts_session_t;
+
 #define STATUS_LIVE_HOLD_SECONDS 5
 
 static live_status_snapshot_t live_status_snapshot;
+static live_ts_session_t live_ts_session;
+
+static void live_ts_session_start(time_t now)
+{
+    uint32_t next_id = live_ts_session.valid ? live_ts_session.session_id + 1u : 1u;
+    uint32_t restarts = live_ts_session.valid ? live_ts_session.restarts + 1u : 0u;
+
+    memset(&live_ts_session, 0, sizeof(live_ts_session));
+    if (next_id == 0u) {
+        next_id = 1u;
+    }
+    live_ts_session.valid = 1;
+    live_ts_session.session_id = next_id;
+    live_ts_session.restarts = restarts;
+    live_ts_session.started_unix = now;
+}
+
+static uint32_t counter_delta_u32(uint32_t current, uint32_t *last)
+{
+    uint32_t delta;
+
+    if (current < *last) {
+        *last = 0u;
+    }
+    delta = current - *last;
+    *last = current;
+    return delta;
+}
+
+static void live_ts_session_note(const ts_validator_t *v,
+                                 uint32_t rs_bad,
+                                 uint32_t rs_ok,
+                                 uint32_t rs_corrected,
+                                 uint32_t rs_corrected_bytes,
+                                 uint32_t rs_uncorrectable,
+                                 uint32_t written_packets,
+                                 time_t now)
+{
+    if (v == NULL) {
+        return;
+    }
+    if (!live_ts_session.valid) {
+        live_ts_session_start(now);
+    }
+
+    live_ts_session.packets += counter_delta_u32(v->packets, &live_ts_session.last_packets);
+    live_ts_session.written_packets += counter_delta_u32(written_packets, &live_ts_session.last_written_packets);
+    live_ts_session.sync_bad += counter_delta_u32(v->sync_bad, &live_ts_session.last_sync_bad);
+    live_ts_session.transport_errors += counter_delta_u32(v->transport_errors, &live_ts_session.last_transport_errors);
+    live_ts_session.cc_errors += counter_delta_u32(v->cc_errors, &live_ts_session.last_cc_errors);
+    live_ts_session.pat_packets += counter_delta_u32(v->pat_packets, &live_ts_session.last_pat_packets);
+    live_ts_session.pmt_packets += counter_delta_u32(v->pmt_packets, &live_ts_session.last_pmt_packets);
+    live_ts_session.sdt_packets += counter_delta_u32(v->sdt_packets, &live_ts_session.last_sdt_packets);
+    live_ts_session.rs_bad += counter_delta_u32(rs_bad, &live_ts_session.last_rs_bad);
+    live_ts_session.rs_ok += counter_delta_u32(rs_ok, &live_ts_session.last_rs_ok);
+    live_ts_session.rs_corrected += counter_delta_u32(rs_corrected, &live_ts_session.last_rs_corrected);
+    live_ts_session.rs_corrected_bytes += counter_delta_u32(rs_corrected_bytes, &live_ts_session.last_rs_corrected_bytes);
+    live_ts_session.rs_uncorrectable += counter_delta_u32(rs_uncorrectable, &live_ts_session.last_rs_uncorrectable);
+}
 
 static void live_outer_alignment_note_result(uint32_t rs_ok,
                                              uint32_t rs_uncorrectable,
@@ -1400,6 +1492,7 @@ void rbdvbt_outer_reset_live_stream(void)
     live_grdvbt_outer_reset();
     live_outer_alignment.valid = 0;
     memset(&live_status_snapshot, 0, sizeof(live_status_snapshot));
+    live_ts_session_start(time(NULL));
 }
 
 static int live_mpeg_sync_reserve(size_t extra)
@@ -2519,6 +2612,14 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     updated_unix = time(NULL);
 
     if (status->live_mode) {
+        live_ts_session_note(v,
+                             rs_bad,
+                             rs_ok,
+                             rs_corrected,
+                             rs_corrected_bytes,
+                             rs_uncorrectable,
+                             written_packets,
+                             updated_unix);
         live_status_snapshot_update(v,
                                     updated_unix,
                                     rs_bad,
@@ -2675,6 +2776,36 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     fprintf(f, "  \"pcr_pid\": %u,\n", display_v->pcr_pid == 0x1fffu ? 8191u : display_v->pcr_pid);
     fprintf(f, "  \"video_pid\": %u,\n", display_v->video_pid == 0x1fffu ? 8191u : display_v->video_pid);
     fprintf(f, "  \"audio_pid\": %u,\n", display_v->audio_pid == 0x1fffu ? 8191u : display_v->audio_pid);
+    fprintf(f, "  \"ts_session_id\": %u,\n", status->live_mode && live_ts_session.valid ? live_ts_session.session_id : 0u);
+    fprintf(f, "  \"ts_session_restarts\": %u,\n", status->live_mode && live_ts_session.valid ? live_ts_session.restarts : 0u);
+    fprintf(f, "  \"ts_session_start_unix\": %lld,\n",
+            (long long)(status->live_mode && live_ts_session.valid ? live_ts_session.started_unix : 0));
+    fprintf(f, "  \"ts_session_packets\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.packets : 0u));
+    fprintf(f, "  \"ts_session_written_packets\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.written_packets : 0u));
+    fprintf(f, "  \"ts_session_sync_bad\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.sync_bad : 0u));
+    fprintf(f, "  \"ts_session_transport_errors\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.transport_errors : 0u));
+    fprintf(f, "  \"ts_session_cc_errors\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.cc_errors : 0u));
+    fprintf(f, "  \"ts_session_pat_packets\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.pat_packets : 0u));
+    fprintf(f, "  \"ts_session_pmt_packets\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.pmt_packets : 0u));
+    fprintf(f, "  \"ts_session_sdt_packets\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.sdt_packets : 0u));
+    fprintf(f, "  \"ts_session_rs_ok\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.rs_ok : 0u));
+    fprintf(f, "  \"ts_session_rs_bad\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.rs_bad : 0u));
+    fprintf(f, "  \"ts_session_rs_corrected\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.rs_corrected : 0u));
+    fprintf(f, "  \"ts_session_rs_corrected_bytes\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.rs_corrected_bytes : 0u));
+    fprintf(f, "  \"ts_session_rs_uncorrectable\": %llu,\n",
+            (unsigned long long)(status->live_mode ? live_ts_session.rs_uncorrectable : 0u));
     fprintf(f, "  \"stdout_enabled\": %s,\n", stdout_enabled ? "true" : "false");
     fprintf(f, "  \"waiting_for_video_start\": %s,\n", waiting_for_video_start ? "true" : "false");
     fprintf(f, "  \"lamp_symbol_rate\": %s,\n", lamp_symbol_rate ? "true" : "false");
