@@ -104,11 +104,23 @@ of fout gedetecteerde audiostream de SRT MPEG-TS output niet kan blokkeren met
 `sample rate not set`. Als audio later betrouwbaar nodig is, kan de map bewust
 worden aangepast, bijvoorbeeld met `FFMPEG_MAP=0`.
 
+ffmpeg stderr wordt standaard tijdelijk gelogd in de run-directory onder `/tmp`
+en bij cleanup verwijderd. Zet `FFMPEGLOG=/pad/naar/ffmpeg.log` als je die log
+voor diagnose wilt bewaren. De watchdog stopt de hele pipeline wanneer ffmpeg
+in de recente log herhaald `non-existing PPS` of `no frame!` meldt. Standaard
+gebeurt dat bij 20 recente meldingen, zodat de user-service de keten opnieuw
+start in plaats van een oude buffer te blijven tonen. Dit kan worden aangepast
+met `FFMPEG_NO_FRAME_LIMIT`; zet `FFMPEG_NO_FRAME_LIMIT=0` om deze controle uit
+te schakelen.
+
 Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:
 
 ```sh
 LOGLEVEL=info tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
+
+Receiverlogs worden in `logs/` bewaard, maar het script houdt standaard alleen
+de laatste 10 `rx_*.log` bestanden. Pas dit aan met `LOG_KEEP=N`.
 
 Het PI6EHV-startscript zet live AFC standaard aan, zodat de ontvanger kleine
 carrier-bin drift kan volgen. Voor een vergelijkende test kan dit uit:
@@ -119,9 +131,10 @@ AFC=0 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 
 Het startscript bewaakt de receiverstatus. Nadat er eenmaal lock is geweest,
 stopt het de RTL-SDR, receiver en ffmpeg pipeline wanneer `locked` langer dan
-15 seconden false blijft of wanneer de status-JSON langer dan 10 seconden niet
-meer wordt bijgewerkt. Daarmee valt de SRT-verbinding weg in plaats van dat het
-laatste ontvangen beeld blijft staan. De user-service start daarna opnieuw door
+15 seconden false blijft, wanneer de status-JSON langer dan 10 seconden niet
+meer wordt bijgewerkt, of wanneer ffmpeg in een H.264 no-frame/PPS-foutlus
+blijft hangen. Daarmee valt de SRT-verbinding weg in plaats van dat het laatste
+ontvangen beeld blijft staan. De user-service start daarna opnieuw door
 `Restart=on-failure`.
 
 ```sh

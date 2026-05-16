@@ -24,7 +24,10 @@ status_json="${STATUS_JSON:-/var/www/html/dvb/dvbt-rx-status.json}"
 loglevel="${LOGLEVEL:-quiet}"
 session="${SESSION:-$(date +%Y%m%d_%H%M%S)}"
 log_dir="${LOG_DIR:-${repo_dir}/logs}"
+log_keep="${LOG_KEEP:-10}"
 rxlog="${RXLOG:-${log_dir}/rx_${session}.log}"
+ffmpeglog="${FFMPEGLOG:-}"
+ffmpeglog_help="${FFMPEGLOG:-temporary run log}"
 srt_url="${SRT_URL:-srt://44.137.26.85:4001?mode=caller&latency=500000}"
 ffmpeg_loglevel="${FFMPEG_LOGLEVEL:-error}"
 ffmpeg_probesize="${FFMPEG_PROBESIZE:-2000000}"
@@ -36,6 +39,7 @@ udp_ts="${UDP_TS:-${UDP_OUT:-127.0.0.1:10000}}"
 watchdog_enabled="${WATCHDOG_ENABLED:-1}"
 lock_loss_timeout="${LOCK_LOSS_TIMEOUT:-15}"
 status_stale_timeout="${STATUS_STALE_TIMEOUT:-10}"
+ffmpeg_no_frame_limit="${FFMPEG_NO_FRAME_LIMIT:-20}"
 watchdog_interval="${WATCHDOG_INTERVAL:-1}"
 
 usage() {
@@ -61,12 +65,15 @@ Environment:
   LOGLEVEL        receiver loglevel. Default: ${loglevel}
   AFC             enable receiver AFC when set to 1. Default: ${afc}
   LOG_DIR         log directory. Default: ${log_dir}
+  LOG_KEEP        receiver logs to keep in LOG_DIR. Default: ${log_keep}
   RXLOG           receiver log path. Default: ${rxlog}
+  FFMPEGLOG       ffmpeg log path. Default: ${ffmpeglog_help}
   FFMPEG_LOGLEVEL ffmpeg loglevel. Default: ${ffmpeg_loglevel}
   FFMPEG_MAP      ffmpeg stream map for SRT output. Default: ${ffmpeg_map}
   WATCHDOG_ENABLED stop pipeline after lock loss when set to 1. Default: ${watchdog_enabled}
   LOCK_LOSS_TIMEOUT seconds without lock after first lock before stopping. Default: ${lock_loss_timeout}
   STATUS_STALE_TIMEOUT seconds without fresh JSON after first lock before stopping. Default: ${status_stale_timeout}
+  FFMPEG_NO_FRAME_LIMIT recent h264 parser errors before restart. Default: ${ffmpeg_no_frame_limit}
   GUI             pass --gui to rbdvbt_rx when set to 1. Default: 0
   UDP_TS          receiver-to-ffmpeg UDP TS endpoint. Default: ${udp_ts}
   UDP_OUT         compatibility alias for UDP_TS
@@ -105,6 +112,24 @@ if ! "${ffmpeg_bin}" -hide_banner -protocols 2>/dev/null | awk '$1 == "srt" { fo
 fi
 
 mkdir -p "${log_dir}"
+
+prune_logs() {
+    dir="$1"
+    pattern="$2"
+    keep="$3"
+
+    if [ "${keep}" = "0" ]; then
+        return
+    fi
+    find "${dir}" -maxdepth 1 -type f -name "${pattern}" -printf '%T@ %p\n' 2>/dev/null |
+        sort -rn |
+        awk -v keep="${keep}" 'NR > keep { sub(/^[^ ]+ /, ""); print }' |
+        while IFS= read -r old_log; do
+            rm -f -- "${old_log}"
+        done
+}
+
+prune_logs "${log_dir}" "rx_*.log" "${log_keep}"
 
 rx_args=(
     --stdin
@@ -169,6 +194,27 @@ json_uint() {
     sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p" "${file}" 2>/dev/null | tail -n 1
 }
 
+ffmpeg_h264_error_count() {
+    file="$1"
+    offset="$2"
+    size=0
+
+    if [ ! -s "${file}" ]; then
+        printf "0 0\n"
+        return 0
+    fi
+    size="$(wc -c < "${file}" 2>/dev/null | tr -d ' ' || printf "0")"
+    if [ "${size}" -le "${offset}" ]; then
+        printf "0 %s\n" "${size}"
+        return 0
+    fi
+    tail -c "+$((offset + 1))" "${file}" 2>/dev/null | awk -v size="${size}" '
+        /non-existing PPS/ { count++ }
+        /no frame!/ { count++ }
+        END { printf "%u %s\n", count, size }
+    '
+}
+
 cleanup() {
     trap - INT TERM EXIT
     if [ -n "${rtl_pid:-}" ]; then
@@ -201,6 +247,11 @@ stop_pipeline() {
     exit 75
 }
 
+run_dir="$(mktemp -d "/tmp/dvbt-rx.${session}.XXXXXX")"
+if [ -z "${ffmpeglog}" ]; then
+    ffmpeglog="${run_dir}/ffmpeg.log"
+fi
+
 printf "Starting RTL-SDR receiver to SRT\n" >&2
 printf "  RF:        %s Hz, sample rate %s, gain %s, device %s\n" "${frequency}" "${sample_rate}" "${gain}" "${device}" >&2
 printf "  DVB-T:     SR %s, GI %s, FEC %s\n" "${symbol_rate}" "${gi}" "${fec}" >&2
@@ -211,10 +262,10 @@ else
     printf "  TS path:   receiver stdout -> ffmpeg FIFO\n" >&2
 fi
 printf "  RX log:    %s\n" "${rxlog}" >&2
+printf "  FFmpeg log: %s\n" "${ffmpeglog}" >&2
 printf "  Status:    %s\n" "${status_json}" >&2
-printf "  Watchdog:  enabled=%s lock_loss=%ss stale_json=%ss\n" "${watchdog_enabled}" "${lock_loss_timeout}" "${status_stale_timeout}" >&2
+printf "  Watchdog:  enabled=%s lock_loss=%ss stale_json=%ss h264_errors=%s\n" "${watchdog_enabled}" "${lock_loss_timeout}" "${status_stale_timeout}" "${ffmpeg_no_frame_limit}" >&2
 
-run_dir="$(mktemp -d "/tmp/dvbt-rx.${session}.XXXXXX")"
 iq_fifo="${run_dir}/iq.u8"
 mkfifo "${iq_fifo}"
 if [ -z "${ffmpeg_ts_input}" ]; then
@@ -238,7 +289,7 @@ ffmpeg_args=(
     "${srt_url}"
 )
 
-"${ffmpeg_bin}" "${ffmpeg_args[@]}" &
+"${ffmpeg_bin}" "${ffmpeg_args[@]}" 2> "${ffmpeglog}" &
 ffmpeg_pid=$!
 
 "${rtl_sdr_bin}" -d "${device}" -f "${frequency}" -s "${sample_rate}" -g "${gain}" - > "${iq_fifo}" &
@@ -253,6 +304,8 @@ rx_pid=$!
 
 seen_lock=0
 lock_lost_since=0
+ffmpeg_log_offset=0
+ffmpeg_h264_errors=0
 start_time="$(date +%s)"
 
 while kill -0 "${rtl_pid}" 2>/dev/null &&
@@ -285,6 +338,20 @@ while kill -0 "${rtl_pid}" 2>/dev/null &&
                 fi
             elif [ $((now - updated)) -ge "${status_stale_timeout}" ]; then
                 stop_pipeline "status JSON stale for ${status_stale_timeout}s"
+            fi
+        fi
+
+        if [ "${ffmpeg_no_frame_limit}" != "0" ]; then
+            read -r new_ffmpeg_h264_errors ffmpeg_log_offset <<EOF
+$(ffmpeg_h264_error_count "${ffmpeglog}" "${ffmpeg_log_offset}")
+EOF
+            if [ "${new_ffmpeg_h264_errors}" -gt 0 ]; then
+                ffmpeg_h264_errors=$((ffmpeg_h264_errors + new_ffmpeg_h264_errors))
+            else
+                ffmpeg_h264_errors=0
+            fi
+            if [ "${ffmpeg_h264_errors}" -ge "${ffmpeg_no_frame_limit}" ]; then
+                stop_pipeline "ffmpeg h264 parser stuck after repeated no-frame/PPS errors"
             fi
         fi
     fi

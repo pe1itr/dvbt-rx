@@ -301,7 +301,11 @@ gaat naar `logs/rx_YYYYmmdd_HHMMSS.log`, en status JSON standaard naar
 `/var/www/html/dvb/dvbt-rx-status.json`. Zet `GUI=1` om ook `--gui` aan de
 receiver door te geven. ffmpeg stuurt standaard alleen de eerste videostream
 door (`FFMPEG_MAP=0:v:0`) om onvolledige audioparameters bij zwakke locks niet
-de SRT-outputheader te laten blokkeren.
+de SRT-outputheader te laten blokkeren. De PI6EHV watchdog stopt de pipeline
+ook wanneer ffmpeg herhaald H.264 `no frame!` of `non-existing PPS` meldt,
+zodat systemd de keten opnieuw kan starten. ffmpeg stderr wordt daarvoor
+standaard tijdelijk onder `/tmp` gelogd en bij cleanup verwijderd; receiverlogs
+worden beperkt met `LOG_KEEP`.
 
 De losse webpagina `tools-pi6ehv/dvbt-rx-status.html` leest die JSON via
 `dvb/dvbt-rx-status.json`. Plaats de pagina op de webroot van de Odroid,
