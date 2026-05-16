@@ -1517,6 +1517,7 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
 
 static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples);
 static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_delta);
+static int live_iq_discontinuity_pending;
 
 static int read_probe_samples(const rbdvbt_config_t *cfg,
                               complexf_t **out_samples,
@@ -1547,7 +1548,7 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
     rbdvbt_status_publish_idle(&status, "start", 0);
 
     while (count < sample_limit) {
-        size_t want = 4096;
+        size_t want = cfg->live_mode ? (size_t)(sample_limit - count) : 4096u;
         size_t got;
         size_t n;
 
@@ -1560,6 +1561,7 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
 
             got = live_iq_ring_read(&samples[count], want, &overrun_delta);
             if (overrun_delta != 0u) {
+                live_iq_discontinuity_pending = 1;
                 fprintf(stderr,
                         "[iqring] overrun dropped_samples=%llu\n",
                         (unsigned long long)overrun_delta);
@@ -1766,20 +1768,25 @@ static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_
 
     pthread_mutex_lock(&live_iq_ring.mutex);
     overrun_before = live_iq_ring.overrun_samples;
-    while (got < want) {
-        while (live_iq_ring.count == 0u && !live_iq_ring.eof) {
-            pthread_cond_wait(&live_iq_ring.not_empty, &live_iq_ring.mutex);
-        }
-        if (live_iq_ring.count == 0u && live_iq_ring.eof) {
-            break;
-        }
-        while (got < want && live_iq_ring.count > 0u) {
-            out[got++] = live_iq_ring.items[live_iq_ring.head];
-            live_iq_ring.head = (live_iq_ring.head + 1u) % live_iq_ring.cap;
-            live_iq_ring.count--;
-        }
-        pthread_cond_broadcast(&live_iq_ring.not_full);
+    while (live_iq_ring.count < want && !live_iq_ring.eof) {
+        pthread_cond_wait(&live_iq_ring.not_empty, &live_iq_ring.mutex);
     }
+    if (live_iq_ring.count < want && live_iq_ring.eof) {
+        want = live_iq_ring.count;
+    }
+    if (live_iq_ring.count > want) {
+        size_t drop_count = live_iq_ring.count - want;
+
+        live_iq_ring.head = (live_iq_ring.head + drop_count) % live_iq_ring.cap;
+        live_iq_ring.count -= drop_count;
+        live_iq_ring.overrun_samples += (uint64_t)drop_count;
+    }
+    while (got < want && live_iq_ring.count > 0u) {
+        out[got++] = live_iq_ring.items[live_iq_ring.head];
+        live_iq_ring.head = (live_iq_ring.head + 1u) % live_iq_ring.cap;
+        live_iq_ring.count--;
+    }
+    pthread_cond_broadcast(&live_iq_ring.not_full);
     if (overrun_delta != NULL) {
         *overrun_delta = live_iq_ring.overrun_samples - overrun_before;
     }
@@ -7461,6 +7468,10 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     if (cfg->live_mode) {
         size_t first_base = (size_t)start + gi_len;
 
+        if (live_iq_discontinuity_pending) {
+            live_frontend_cursor.valid = 0;
+            live_iq_discontinuity_pending = 0;
+        }
         if (count > first_base + RBDVBT_DVBT_2K_FFT_SIZE) {
             uint32_t available_symbols = (uint32_t)((count - first_base - RBDVBT_DVBT_2K_FFT_SIZE) / symbol_len) + 1u;
 
