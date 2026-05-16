@@ -32,8 +32,16 @@ srt_url="${SRT_URL:-srt://44.137.26.85:4001?mode=caller&latency=500000}"
 ffmpeg_loglevel="${FFMPEG_LOGLEVEL:-error}"
 ffmpeg_probesize="${FFMPEG_PROBESIZE:-2000000}"
 ffmpeg_analyzeduration="${FFMPEG_ANALYZEDURATION:-2000000}"
-ffmpeg_map="${FFMPEG_MAP:-0:v:0}"
+if [ "${FFMPEG_MAP+x}" = "x" ]; then
+    ffmpeg_map="${FFMPEG_MAP}"
+    ffmpeg_custom_map=1
+else
+    ffmpeg_map="0:v:0"
+    ffmpeg_custom_map=0
+fi
 ffmpeg_scale="${FFMPEG_SCALE:-960:540}"
+ffmpeg_audio="${FFMPEG_AUDIO:-off}"
+ffmpeg_audio_bitrate="${FFMPEG_AUDIO_BITRATE:-96k}"
 ffmpeg_video_bitrate="${FFMPEG_VIDEO_BITRATE:-900k}"
 ffmpeg_video_maxrate="${FFMPEG_VIDEO_MAXRATE:-${ffmpeg_video_bitrate}}"
 ffmpeg_video_bufsize="${FFMPEG_VIDEO_BUFSIZE:-1800k}"
@@ -78,6 +86,8 @@ Environment:
   FFMPEG_LOGLEVEL ffmpeg loglevel. Default: ${ffmpeg_loglevel}
   FFMPEG_MAP      ffmpeg stream map for SRT output. Default: ${ffmpeg_map}
   FFMPEG_SCALE    SRT video scale WIDTH:HEIGHT, or off to stream-copy. Default: ${ffmpeg_scale}
+  FFMPEG_AUDIO    SRT audio handling: off, copy, or aac. Default: ${ffmpeg_audio}
+  FFMPEG_AUDIO_BITRATE AAC audio bitrate when FFMPEG_AUDIO=aac. Default: ${ffmpeg_audio_bitrate}
   FFMPEG_VIDEO_BITRATE scaled H.264 target bitrate. Default: ${ffmpeg_video_bitrate}
   WATCHDOG_ENABLED monitor and stop/restart pipeline when set to 1. Default: ${watchdog_enabled}
   LOCK_LOSS_TIMEOUT seconds without lock after first lock before watchdog action. Default: ${lock_loss_timeout}
@@ -122,6 +132,15 @@ if ! "${ffmpeg_bin}" -hide_banner -protocols 2>/dev/null | awk '$1 == "srt" { fo
     printf "Install an ffmpeg build with libsrt support or set FFMPEG=/path/to/ffmpeg-with-srt.\n" >&2
     exit 1
 fi
+case "${ffmpeg_audio}" in
+    off|copy|aac)
+        ;;
+    *)
+        printf "Unsupported FFMPEG_AUDIO value: %s\n" "${ffmpeg_audio}" >&2
+        printf "Use FFMPEG_AUDIO=off, FFMPEG_AUDIO=copy, or FFMPEG_AUDIO=aac.\n" >&2
+        exit 1
+        ;;
+esac
 
 mkdir -p "${log_dir}"
 
@@ -316,12 +335,33 @@ run_pipeline_once() {
         -probesize "${ffmpeg_probesize}"
         -analyzeduration "${ffmpeg_analyzeduration}"
         -i "${current_ffmpeg_ts_input}"
-        -map "${ffmpeg_map}"
     )
-    if [ "${ffmpeg_scale}" = "off" ] || [ "${ffmpeg_scale}" = "copy" ]; then
+    if [ "${ffmpeg_custom_map}" = "1" ]; then
         ffmpeg_args+=(
-            -c copy
+            -map "${ffmpeg_map}"
         )
+    else
+        ffmpeg_args+=(
+            -map 0:v:0
+        )
+        if [ "${ffmpeg_audio}" != "off" ]; then
+            ffmpeg_args+=(
+                -map '0:a:0?'
+            )
+        fi
+    fi
+    if [ "${ffmpeg_scale}" = "off" ] || [ "${ffmpeg_scale}" = "copy" ]; then
+        if [ "${ffmpeg_audio}" = "aac" ] && [ "${ffmpeg_custom_map}" != "1" ]; then
+            ffmpeg_args+=(
+                -c:v copy
+                -c:a aac
+                -b:a "${ffmpeg_audio_bitrate}"
+            )
+        else
+            ffmpeg_args+=(
+                -c copy
+            )
+        fi
     else
         ffmpeg_width="${ffmpeg_scale%%:*}"
         ffmpeg_height="${ffmpeg_scale#*:}"
@@ -334,8 +374,21 @@ run_pipeline_once() {
             -maxrate "${ffmpeg_video_maxrate}"
             -bufsize "${ffmpeg_video_bufsize}"
             -pix_fmt yuv420p
-            -an
         )
+        if [ "${ffmpeg_audio}" = "copy" ] || [ "${ffmpeg_custom_map}" = "1" ]; then
+            ffmpeg_args+=(
+                -c:a copy
+            )
+        elif [ "${ffmpeg_audio}" = "aac" ]; then
+            ffmpeg_args+=(
+                -c:a aac
+                -b:a "${ffmpeg_audio_bitrate}"
+            )
+        else
+            ffmpeg_args+=(
+                -an
+            )
+        fi
     fi
     ffmpeg_args+=(
         -f mpegts

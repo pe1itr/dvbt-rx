@@ -303,8 +303,10 @@ en ffmpeg. Daarmee wordt de oude stdout/FIFO-route vermeden. Receiver-diagnostie
 gaat naar `logs/rx_YYYYmmdd_HHMMSS.log`, en status JSON standaard naar
 `/var/www/html/dvb/dvbt-rx-status.json`. Zet `GUI=1` om ook `--gui` aan de
 receiver door te geven. ffmpeg stuurt standaard alleen de eerste videostream
-door (`FFMPEG_MAP=0:v:0`) om onvolledige audioparameters bij zwakke locks niet
-de SRT-outputheader te laten blokkeren. De PI6EHV watchdog stopt de pipeline
+door (`FFMPEG_MAP=0:v:0`, `FFMPEG_AUDIO=off`) om onvolledige audioparameters bij
+zwakke locks niet de SRT-outputheader te laten blokkeren. Zet
+`FFMPEG_AUDIO=copy` of `FFMPEG_AUDIO=aac` om de eerste audiostream mee te sturen.
+De PI6EHV watchdog stopt de pipeline
 wanneer na eerdere lock zowel de volledige receiver-lock als OFDM-sync langer
 dan `LOCK_LOSS_TIMEOUT` weg zijn. Ook stopt hij wanneer ffmpeg herhaald H.264
 `no frame!` of `non-existing PPS` meldt, zodat systemd de keten opnieuw kan
