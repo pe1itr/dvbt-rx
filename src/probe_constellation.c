@@ -1524,6 +1524,7 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
 static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples);
 static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_delta);
 static int live_iq_discontinuity_pending;
+static uint64_t live_iq_overrun_pending_samples;
 
 static int read_probe_samples(const rbdvbt_config_t *cfg,
                               complexf_t **out_samples,
@@ -1568,6 +1569,7 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
             got = live_iq_ring_read(&samples[count], want, &overrun_delta);
             if (overrun_delta != 0u) {
                 live_iq_discontinuity_pending = 1;
+                live_iq_overrun_pending_samples += overrun_delta;
                 fprintf(stderr,
                         "[iqring] overrun dropped_samples=%llu\n",
                         (unsigned long long)overrun_delta);
@@ -2070,6 +2072,31 @@ static int live_resampler_configure(double ratio,
     return 0;
 }
 
+static uint64_t live_resampler_skip_input(live_resampler_state_t *st, uint64_t skipped)
+{
+    uint64_t skipped_out = 0u;
+
+    if (skipped == 0u || !st->valid || st->step <= 0.0) {
+        return 0u;
+    }
+
+    if ((double)skipped > st->next_x) {
+        double span = (double)skipped - st->next_x;
+
+        skipped_out = (uint64_t)ceil(span / st->step);
+        st->next_x += (double)skipped_out * st->step;
+        st->output_seq += skipped_out;
+        if (live_frontend_cursor.valid) {
+            live_frontend_cursor.next_symbol_sample_abs += skipped_out;
+            live_frontend_cursor.last_symbol_sample_abs += skipped_out;
+        }
+    }
+    st->next_x -= (double)skipped;
+    st->tail_count = 0u;
+
+    return skipped_out;
+}
+
 static int resample_sinc_ratio_live(const complexf_t *in,
                                     size_t in_count,
                                     double ratio,
@@ -2079,6 +2106,8 @@ static int resample_sinc_ratio_live(const complexf_t *in,
                                     size_t *out_count)
 {
     live_resampler_state_t *st = &live_resampler_state;
+    uint64_t skipped_input = 0u;
+    uint64_t skipped_output = 0u;
     size_t work_count;
     size_t out_cap;
     size_t out_n = 0;
@@ -2092,6 +2121,12 @@ static int resample_sinc_ratio_live(const complexf_t *in,
 
     if (live_resampler_configure(ratio, input_rate_hz, output_rate_hz) != 0) {
         return -1;
+    }
+
+    if (live_iq_overrun_pending_samples != 0u) {
+        skipped_input = live_iq_overrun_pending_samples;
+        live_iq_overrun_pending_samples = 0u;
+        skipped_output = live_resampler_skip_input(st, skipped_input);
     }
 
     t0 = monotonic_seconds();
@@ -2179,11 +2214,13 @@ static int resample_sinc_ratio_live(const complexf_t *in,
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
         fprintf(stderr,
-                "[resample] live-state out_abs=%llu tail=%zu next_x=%.6f emitted=%zu\n",
+                "[resample] live-state out_abs=%llu tail=%zu next_x=%.6f emitted=%zu skipped_in=%llu skipped_out=%llu\n",
                 (unsigned long long)st->output_seq,
                 st->tail_count,
                 st->next_x,
-                out_n);
+                out_n,
+                (unsigned long long)skipped_input,
+                (unsigned long long)skipped_output);
     }
 
     t1 = monotonic_seconds();
@@ -7602,6 +7639,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     int afc_delta_bins = 0;
     uint32_t afc_trend_count = 0u;
     int frontend_continuous = 0;
+    int input_gap_pending = 0;
     int rc = -1;
     double demod_t0 = 0.0;
     double demod_scan_t1 = 0.0;
@@ -7612,7 +7650,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         size_t first_base = (size_t)start + gi_len;
 
         if (live_iq_discontinuity_pending) {
-            live_frontend_cursor.valid = 0;
+            input_gap_pending = 1;
             live_iq_discontinuity_pending = 0;
         }
         if (count > first_base + RBDVBT_DVBT_2K_FFT_SIZE) {
@@ -8131,7 +8169,8 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             }
             afc_delta_bins = afc_bin_delta;
             afc_trend_count = afc_confirm_count;
-		    if (delta <= LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR &&
+		    if (!input_gap_pending &&
+		        delta <= LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR &&
 		        phase_delta <= LIVE_FRONTEND_CONTINUITY_MAX_SAMPLE_ERROR &&
 		        (best_bin_shift == live_frontend_cursor.bin_shift || afc_bin_shift_allowed) &&
 	        best_conjugate == live_frontend_cursor.conjugate &&
@@ -8145,7 +8184,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
 	    }
             if (cfg->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                 fprintf(stderr,
-                        "[frontend-cont] mode=%s first_abs=%llu expected_abs=%llu delta=%lld delta_symbols=%lld phase_delta=%llu start=%u skip=%u used=%u seq=%llu cursor_seq=%llu continuous=%d bin=%d/%d afc_delta=%d afc_ok=%d afc_count=%u conj=%d/%d lock=%.5f\n",
+                        "[frontend-cont] mode=%s first_abs=%llu expected_abs=%llu delta=%lld delta_symbols=%lld phase_delta=%llu start=%u skip=%u used=%u seq=%llu cursor_seq=%llu continuous=%d input_gap=%d bin=%d/%d afc_delta=%d afc_ok=%d afc_count=%u conj=%d/%d lock=%.5f\n",
                         live_frontend_sync_mode,
                         (unsigned long long)first_symbol_sample_abs,
                         (unsigned long long)expected,
@@ -8158,6 +8197,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                         (unsigned long long)frame_symbol_seq_start,
                         (unsigned long long)live_frontend_cursor.symbol_seq,
                         frontend_continuous,
+                        input_gap_pending,
                         best_bin_shift,
                         live_frontend_cursor.bin_shift,
                         afc_bin_delta,
