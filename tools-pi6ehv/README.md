@@ -147,7 +147,7 @@ voor korte trackingdippen.
 Het startscript bewaakt de receiverstatus. Nadat er eenmaal lock of OFDM-sync
 is geweest, herstart het standaard de RTL-SDR, receiver en ffmpeg pipeline
 wanneer zowel `locked` als `lamp_ofdm_sync` langer dan 15 seconden false
-blijven, wanneer de status-JSON langer dan 10 seconden niet meer wordt
+blijven, wanneer de status-JSON langer dan 30 seconden niet meer wordt
 bijgewerkt, of wanneer ffmpeg in een H.264 no-frame/PPS-foutlus blijft hangen.
 Daarmee krijgt de decoder tijd om TS/video opnieuw te pakken wanneer
 `--wait-video-start` tijdelijk wacht, maar valt de SRT-verbinding nog steeds

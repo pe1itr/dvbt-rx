@@ -229,7 +229,7 @@ typedef struct {
     uint32_t last_rs_uncorrectable;
 } live_ts_session_t;
 
-#define STATUS_LIVE_HOLD_SECONDS 5
+#define STATUS_LIVE_HOLD_SECONDS 30
 
 static live_status_snapshot_t live_status_snapshot;
 static live_ts_session_t live_ts_session;
@@ -847,6 +847,17 @@ static const char *lock_state_name(rx_lock_state_t state)
         return "RELOCK";
     }
     return "SEARCH";
+}
+
+static rx_lock_state_t status_display_lock_state(rx_lock_state_t state, int held_locked)
+{
+    if (held_locked &&
+        (state == RX_LOCK_SEARCH ||
+         state == RX_LOCK_RELOCK ||
+         state == RX_LOCK_LOCKING)) {
+        return RX_LOCK_LOCKED;
+    }
+    return state;
 }
 
 static void gf_tables_init(void)
@@ -2822,7 +2833,8 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     fprintf(f, "  \"status_update\": %u,\n", update_seq);
     fprintf(f, "  \"updated_unix\": %lld,\n", (long long)updated_unix);
     fprintf(f, "  \"stage\": \"%s\",\n", stage != NULL ? stage : "unknown");
-    fprintf(f, "  \"lock_state\": \"%s\",\n", lock_state_name(lock_state));
+    fprintf(f, "  \"lock_state\": \"%s\",\n",
+            lock_state_name(status_display_lock_state(lock_state, held_locked)));
     fprintf(f, "  \"input_samples\": %llu,\n", (unsigned long long)input_samples);
     fprintf(f, "  \"symbol_rate\": \"%s\",\n", status->symbol_rate != NULL ? status->symbol_rate : "unknown");
     fprintf(f, "  \"modulation\": \"%s\",\n", status->modulation != NULL ? status->modulation : "dvb-t");
