@@ -324,6 +324,7 @@
           <div class="metric"><div class="label">CFO</div><div id="cfo" class="value">-</div></div>
           <div class="metric"><div class="label">Bin shift</div><div id="binShift" class="value">-</div></div>
           <div class="metric"><div class="label">AFC</div><div id="afc" class="value">-</div></div>
+          <div class="metric"><div class="label">FIFO1 load</div><div id="fifo1Load" class="value">-</div></div>
           <div class="metric"><div class="label">Video start</div><div id="videoStart" class="value">-</div></div>
         </div>
       </section>
@@ -333,6 +334,7 @@
         <div class="metrics">
           <div class="metric"><div class="label">Packets</div><div id="packets" class="value">-</div></div>
           <div class="metric"><div class="label">Output packets</div><div id="writtenPackets" class="value">-</div></div>
+          <div class="metric"><div class="label">Sessie output</div><div id="sessionWrittenPackets" class="value">-</div></div>
           <div class="metric"><div class="label">Program ID</div><div id="programId" class="value">-</div></div>
           <div class="metric"><div class="label">Video PID</div><div id="videoPid" class="value">-</div></div>
           <div class="metric"><div class="label">Audio PID</div><div id="audioPid" class="value">-</div></div>
@@ -485,10 +487,12 @@
       setText("cfo", fixed(data.cfo_hz, 1, " Hz"));
       setText("binShift", dash(data.bin_shift));
       setText("afc", data.afc_enabled ? "aan" : data.afc_advised ? "advies" : "uit");
+      setText("fifo1Load", fixed(data.fifo1_load_percent, 0, "%"));
       setText("videoStart", data.waiting_for_video_start ? "wachten" : "open");
 
       setText("packets", number(data.packets));
       setText("writtenPackets", number(data.written_packets));
+      setText("sessionWrittenPackets", number(data.ts_session_written_packets));
       setText("programId", dash(data.program_id));
       setText("videoPid", pid(data.video_pid));
       setText("audioPid", pid(data.audio_pid));
