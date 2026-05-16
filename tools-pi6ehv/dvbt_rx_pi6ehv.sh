@@ -41,6 +41,9 @@ lock_loss_timeout="${LOCK_LOSS_TIMEOUT:-15}"
 status_stale_timeout="${STATUS_STALE_TIMEOUT:-10}"
 ffmpeg_no_frame_limit="${FFMPEG_NO_FRAME_LIMIT:-20}"
 watchdog_interval="${WATCHDOG_INTERVAL:-1}"
+restart_on_watchdog="${RESTART_ON_WATCHDOG:-1}"
+restart_delay="${RESTART_DELAY:-2}"
+max_restarts="${MAX_RESTARTS:-0}"
 
 usage() {
     cat <<EOF
@@ -70,10 +73,13 @@ Environment:
   FFMPEGLOG       ffmpeg log path. Default: ${ffmpeglog_help}
   FFMPEG_LOGLEVEL ffmpeg loglevel. Default: ${ffmpeg_loglevel}
   FFMPEG_MAP      ffmpeg stream map for SRT output. Default: ${ffmpeg_map}
-  WATCHDOG_ENABLED stop pipeline after lock loss when set to 1. Default: ${watchdog_enabled}
-  LOCK_LOSS_TIMEOUT seconds without lock after first lock before stopping. Default: ${lock_loss_timeout}
-  STATUS_STALE_TIMEOUT seconds without fresh JSON after first lock before stopping. Default: ${status_stale_timeout}
+  WATCHDOG_ENABLED monitor and stop/restart pipeline when set to 1. Default: ${watchdog_enabled}
+  LOCK_LOSS_TIMEOUT seconds without lock after first lock before watchdog action. Default: ${lock_loss_timeout}
+  STATUS_STALE_TIMEOUT seconds without fresh JSON after first lock before watchdog action. Default: ${status_stale_timeout}
   FFMPEG_NO_FRAME_LIMIT recent h264 parser errors before restart. Default: ${ffmpeg_no_frame_limit}
+  RESTART_ON_WATCHDOG restart pipeline after watchdog stop when set to 1. Default: ${restart_on_watchdog}
+  RESTART_DELAY seconds to wait before a watchdog restart. Default: ${restart_delay}
+  MAX_RESTARTS maximum watchdog restarts, 0 means unlimited. Default: ${max_restarts}
   GUI             pass --gui to rbdvbt_rx when set to 1. Default: 0
   UDP_TS          receiver-to-ffmpeg UDP TS endpoint. Default: ${udp_ts}
   UDP_OUT         compatibility alias for UDP_TS
@@ -238,19 +244,19 @@ cleanup() {
     if [ -n "${run_dir:-}" ]; then
         rm -rf "${run_dir}"
     fi
+    rtl_pid=""
+    rx_pid=""
+    ffmpeg_pid=""
+    run_dir=""
 }
 
-stop_pipeline() {
+request_watchdog_stop() {
     reason="$1"
     printf "Stopping receiver pipeline: %s\n" "${reason}" >&2
+    watchdog_reason="${reason}"
     cleanup
-    exit 75
+    return 0
 }
-
-run_dir="$(mktemp -d "/tmp/dvbt-rx.${session}.XXXXXX")"
-if [ -z "${ffmpeglog}" ]; then
-    ffmpeglog="${run_dir}/ffmpeg.log"
-fi
 
 printf "Starting RTL-SDR receiver to SRT\n" >&2
 printf "  RF:        %s Hz, sample rate %s, gain %s, device %s\n" "${frequency}" "${sample_rate}" "${gain}" "${device}" >&2
@@ -262,105 +268,157 @@ else
     printf "  TS path:   receiver stdout -> ffmpeg FIFO\n" >&2
 fi
 printf "  RX log:    %s\n" "${rxlog}" >&2
-printf "  FFmpeg log: %s\n" "${ffmpeglog}" >&2
+printf "  FFmpeg log: %s\n" "${ffmpeglog_help}" >&2
 printf "  Status:    %s\n" "${status_json}" >&2
-printf "  Watchdog:  enabled=%s lock_loss=%ss stale_json=%ss h264_errors=%s\n" "${watchdog_enabled}" "${lock_loss_timeout}" "${status_stale_timeout}" "${ffmpeg_no_frame_limit}" >&2
+printf "  Watchdog:  enabled=%s lock_loss=%ss stale_json=%ss h264_errors=%s restart=%s delay=%ss max=%s\n" \
+    "${watchdog_enabled}" "${lock_loss_timeout}" "${status_stale_timeout}" "${ffmpeg_no_frame_limit}" \
+    "${restart_on_watchdog}" "${restart_delay}" "${max_restarts}" >&2
 
-iq_fifo="${run_dir}/iq.u8"
-mkfifo "${iq_fifo}"
-if [ -z "${ffmpeg_ts_input}" ]; then
-    ts_fifo="${run_dir}/rx.ts"
-    mkfifo "${ts_fifo}"
-    ffmpeg_ts_input="${ts_fifo}"
-fi
+: > "${rxlog}"
 trap cleanup INT TERM EXIT
 
-ffmpeg_args=(
-    -hide_banner
-    -loglevel "${ffmpeg_loglevel}"
-    -fflags nobuffer
-    -f mpegts
-    -probesize "${ffmpeg_probesize}"
-    -analyzeduration "${ffmpeg_analyzeduration}"
-    -i "${ffmpeg_ts_input}"
-    -map "${ffmpeg_map}"
-    -c copy
-    -f mpegts
-    "${srt_url}"
-)
-
-"${ffmpeg_bin}" "${ffmpeg_args[@]}" 2> "${ffmpeglog}" &
-ffmpeg_pid=$!
-
-"${rtl_sdr_bin}" -d "${device}" -f "${frequency}" -s "${sample_rate}" -g "${gain}" - > "${iq_fifo}" &
-rtl_pid=$!
-
-if [ -n "${rx_udp_ts}" ]; then
-    "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > /dev/null 2> "${rxlog}" &
-else
-    "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > "${ts_fifo}" 2> "${rxlog}" &
-fi
-rx_pid=$!
-
-seen_lock=0
-lock_lost_since=0
-ffmpeg_log_offset=0
-ffmpeg_h264_errors=0
-start_time="$(date +%s)"
-
-while kill -0 "${rtl_pid}" 2>/dev/null &&
-      kill -0 "${rx_pid}" 2>/dev/null &&
-      kill -0 "${ffmpeg_pid}" 2>/dev/null; do
-    if [ "${watchdog_enabled}" = "1" ]; then
-        now="$(date +%s)"
-        locked=""
-        updated=""
-        if [ -f "${status_json}" ]; then
-            locked="$(json_bool locked "${status_json}")"
-            updated="$(json_uint updated_unix "${status_json}")"
-        fi
-
-        if [ "${locked}" = "true" ]; then
-            seen_lock=1
-            lock_lost_since=0
-        elif [ "${seen_lock}" = "1" ]; then
-            if [ "${lock_lost_since}" = "0" ]; then
-                lock_lost_since="${now}"
-            elif [ $((now - lock_lost_since)) -ge "${lock_loss_timeout}" ]; then
-                stop_pipeline "receiver lock lost for ${lock_loss_timeout}s"
-            fi
-        fi
-
-        if [ "${seen_lock}" = "1" ]; then
-            if [ -z "${updated}" ]; then
-                if [ $((now - start_time)) -ge "${status_stale_timeout}" ]; then
-                    stop_pipeline "status JSON missing after receiver lock"
-                fi
-            elif [ $((now - updated)) -ge "${status_stale_timeout}" ]; then
-                stop_pipeline "status JSON stale for ${status_stale_timeout}s"
-            fi
-        fi
-
-        if [ "${ffmpeg_no_frame_limit}" != "0" ]; then
-            read -r new_ffmpeg_h264_errors ffmpeg_log_offset <<EOF
-$(ffmpeg_h264_error_count "${ffmpeglog}" "${ffmpeg_log_offset}")
-EOF
-            if [ "${new_ffmpeg_h264_errors}" -gt 0 ]; then
-                ffmpeg_h264_errors=$((ffmpeg_h264_errors + new_ffmpeg_h264_errors))
-            else
-                ffmpeg_h264_errors=0
-            fi
-            if [ "${ffmpeg_h264_errors}" -ge "${ffmpeg_no_frame_limit}" ]; then
-                stop_pipeline "ffmpeg h264 parser stuck after repeated no-frame/PPS errors"
-            fi
-        fi
+run_pipeline_once() {
+    attempt="$1"
+    pipeline_rc=0
+    watchdog_reason=""
+    trap cleanup INT TERM EXIT
+    run_dir="$(mktemp -d "/tmp/dvbt-rx.${session}.XXXXXX")"
+    current_ffmpeglog="${ffmpeglog}"
+    if [ -z "${current_ffmpeglog}" ]; then
+        current_ffmpeglog="${run_dir}/ffmpeg.log"
     fi
-    sleep "${watchdog_interval}"
-done
 
-pipeline_rc=0
-wait "${rtl_pid}" || pipeline_rc=$?
-wait "${rx_pid}" || pipeline_rc=$?
-wait "${ffmpeg_pid}" || pipeline_rc=$?
-cleanup
-exit "${pipeline_rc}"
+    printf "[pipeline] attempt=%s ffmpeg_log=%s\n" "${attempt}" "${current_ffmpeglog}" >&2
+    printf "[pipeline] attempt=%s start\n" "${attempt}" >> "${rxlog}"
+
+    iq_fifo="${run_dir}/iq.u8"
+    mkfifo "${iq_fifo}"
+    current_ffmpeg_ts_input="${ffmpeg_ts_input}"
+    if [ -z "${current_ffmpeg_ts_input}" ]; then
+        ts_fifo="${run_dir}/rx.ts"
+        mkfifo "${ts_fifo}"
+        current_ffmpeg_ts_input="${ts_fifo}"
+    else
+        ts_fifo=""
+    fi
+
+    ffmpeg_args=(
+        -hide_banner
+        -loglevel "${ffmpeg_loglevel}"
+        -fflags nobuffer
+        -f mpegts
+        -probesize "${ffmpeg_probesize}"
+        -analyzeduration "${ffmpeg_analyzeduration}"
+        -i "${current_ffmpeg_ts_input}"
+        -map "${ffmpeg_map}"
+        -c copy
+        -f mpegts
+        "${srt_url}"
+    )
+
+    "${ffmpeg_bin}" "${ffmpeg_args[@]}" 2> "${current_ffmpeglog}" &
+    ffmpeg_pid=$!
+
+    "${rtl_sdr_bin}" -d "${device}" -f "${frequency}" -s "${sample_rate}" -g "${gain}" - > "${iq_fifo}" &
+    rtl_pid=$!
+
+    if [ -n "${rx_udp_ts}" ]; then
+        "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > /dev/null 2>> "${rxlog}" &
+    else
+        "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > "${ts_fifo}" 2>> "${rxlog}" &
+    fi
+    rx_pid=$!
+
+    seen_lock=0
+    lock_lost_since=0
+    ffmpeg_log_offset=0
+    ffmpeg_h264_errors=0
+    start_time="$(date +%s)"
+
+    while kill -0 "${rtl_pid}" 2>/dev/null &&
+          kill -0 "${rx_pid}" 2>/dev/null &&
+          kill -0 "${ffmpeg_pid}" 2>/dev/null; do
+        if [ "${watchdog_enabled}" = "1" ]; then
+            now="$(date +%s)"
+            locked=""
+            updated=""
+            if [ -f "${status_json}" ]; then
+                locked="$(json_bool locked "${status_json}")"
+                updated="$(json_uint updated_unix "${status_json}")"
+            fi
+            if [ -n "${updated}" ] && [ "${updated}" -lt "${start_time}" ]; then
+                locked=""
+                updated=""
+            fi
+
+            if [ "${locked}" = "true" ]; then
+                seen_lock=1
+                lock_lost_since=0
+            elif [ "${seen_lock}" = "1" ]; then
+                if [ "${lock_lost_since}" = "0" ]; then
+                    lock_lost_since="${now}"
+                elif [ $((now - lock_lost_since)) -ge "${lock_loss_timeout}" ]; then
+                    request_watchdog_stop "receiver lock lost for ${lock_loss_timeout}s"
+                    return 75
+                fi
+            fi
+
+            if [ "${seen_lock}" = "1" ]; then
+                if [ -z "${updated}" ]; then
+                    if [ $((now - start_time)) -ge "${status_stale_timeout}" ]; then
+                        request_watchdog_stop "status JSON missing after receiver lock"
+                        return 75
+                    fi
+                elif [ $((now - updated)) -ge "${status_stale_timeout}" ]; then
+                    request_watchdog_stop "status JSON stale for ${status_stale_timeout}s"
+                    return 75
+                fi
+            fi
+
+            if [ "${ffmpeg_no_frame_limit}" != "0" ]; then
+                read -r new_ffmpeg_h264_errors ffmpeg_log_offset <<EOF
+$(ffmpeg_h264_error_count "${current_ffmpeglog}" "${ffmpeg_log_offset}")
+EOF
+                if [ "${new_ffmpeg_h264_errors}" -gt 0 ]; then
+                    ffmpeg_h264_errors=$((ffmpeg_h264_errors + new_ffmpeg_h264_errors))
+                else
+                    ffmpeg_h264_errors=0
+                fi
+                if [ "${ffmpeg_h264_errors}" -ge "${ffmpeg_no_frame_limit}" ]; then
+                    request_watchdog_stop "ffmpeg h264 parser stuck after repeated no-frame/PPS errors"
+                    return 75
+                fi
+            fi
+        fi
+        sleep "${watchdog_interval}"
+    done
+
+    wait "${rtl_pid}" || pipeline_rc=$?
+    wait "${rx_pid}" || pipeline_rc=$?
+    wait "${ffmpeg_pid}" || pipeline_rc=$?
+    cleanup
+    return "${pipeline_rc}"
+}
+
+attempt=1
+restart_count=0
+while true; do
+    if run_pipeline_once "${attempt}"; then
+        exit 0
+    fi
+    pipeline_rc=$?
+
+    if [ "${pipeline_rc}" != "75" ] || [ "${restart_on_watchdog}" != "1" ]; then
+        exit "${pipeline_rc}"
+    fi
+    if [ "${max_restarts}" != "0" ] && [ "${restart_count}" -ge "${max_restarts}" ]; then
+        printf "Watchdog restart limit reached after %s restarts\n" "${restart_count}" >&2
+        exit "${pipeline_rc}"
+    fi
+
+    restart_count=$((restart_count + 1))
+    attempt=$((attempt + 1))
+    printf "Restarting receiver pipeline after watchdog stop (%s), restart %s\n" \
+        "${watchdog_reason:-unknown}" "${restart_count}" >&2
+    sleep "${restart_delay}"
+done

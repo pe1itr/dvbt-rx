@@ -130,16 +130,21 @@ AFC=0 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
 Het startscript bewaakt de receiverstatus. Nadat er eenmaal lock is geweest,
-stopt het de RTL-SDR, receiver en ffmpeg pipeline wanneer `locked` langer dan
-15 seconden false blijft, wanneer de status-JSON langer dan 10 seconden niet
-meer wordt bijgewerkt, of wanneer ffmpeg in een H.264 no-frame/PPS-foutlus
-blijft hangen. Daarmee valt de SRT-verbinding weg in plaats van dat het laatste
-ontvangen beeld blijft staan. De user-service start daarna opnieuw door
-`Restart=on-failure`.
+herstart het standaard de RTL-SDR, receiver en ffmpeg pipeline wanneer `locked`
+langer dan 15 seconden false blijft, wanneer de status-JSON langer dan 10
+seconden niet meer wordt bijgewerkt, of wanneer ffmpeg in een H.264
+no-frame/PPS-foutlus blijft hangen. Daarmee valt de SRT-verbinding kort weg in
+plaats van dat het laatste ontvangen beeld blijft staan of het handmatig
+gestarte script stopt.
 
 ```sh
 LOCK_LOSS_TIMEOUT=20 STATUS_STALE_TIMEOUT=15 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
+
+Watchdog-herstarts zijn standaard onbeperkt. Gebruik `MAX_RESTARTS=N` om dat te
+begrenzen, `RESTART_DELAY=N` voor de pauze tussen pogingen, of
+`RESTART_ON_WATCHDOG=0` om terug te vallen naar stoppen en de systemd
+`Restart=on-failure` policy te laten herstarten.
 
 ## User systemd service
 
