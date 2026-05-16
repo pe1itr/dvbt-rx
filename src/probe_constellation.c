@@ -68,6 +68,8 @@ static rbdvbt_visualizer_t *visualizer_udp;
 static double visualizer_last_spectrum_time;
 static double visualizer_last_constellation_time;
 
+static void live_decode_status_snapshot(rbdvbt_status_context_t *status);
+
 static void live_status_hold_clear(void)
 {
     memset(&live_status_hold, 0, sizeof(live_status_hold));
@@ -1527,6 +1529,7 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
 
     rbdvbt_iq_stats_init(stats);
     init_status_context_from_config(cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+    live_decode_status_snapshot(&status);
     rbdvbt_status_publish_idle(&status, "start", 0);
 
     while (count < sample_limit) {
@@ -1584,11 +1587,13 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
         count += got;
 
         while (status_period_samples != 0u && (uint64_t)count >= next_status_samples) {
+            live_decode_status_snapshot(&status);
             rbdvbt_status_publish_idle(&status, "input", (uint64_t)count);
             next_status_samples += status_period_samples;
         }
     }
 
+    live_decode_status_snapshot(&status);
     rbdvbt_status_publish_idle(&status, "input-done", (uint64_t)count);
     *out_samples = samples;
     *out_count = count;
@@ -4595,6 +4600,38 @@ static int live_decode_gap_pending;
 
 #define LIVE_DECODE_MAX_QUEUED_SYMBOLS 1024u
 
+static void live_decode_status_snapshot(rbdvbt_status_context_t *status)
+{
+    uint32_t queued;
+    uint32_t processing;
+    uint32_t capacity;
+    uint32_t total;
+
+    if (status == NULL) {
+        return;
+    }
+
+    capacity = status->live_mode ? LIVE_DECODE_MAX_QUEUED_SYMBOLS : 0u;
+    if (status->live_mode) {
+        pthread_mutex_lock(&live_decode_mutex);
+        queued = live_decode_queued_symbols;
+        processing = live_decode_processing_symbols;
+        pthread_mutex_unlock(&live_decode_mutex);
+    } else {
+        queued = 0u;
+        processing = 0u;
+    }
+
+    total = queued + processing;
+    status->fifo1_queued_symbols = queued;
+    status->fifo1_processing_symbols = processing;
+    status->fifo1_capacity_symbols = capacity;
+    status->fifo1_load_percent = capacity > 0u ? (uint32_t)(((uint64_t)total * 100u + capacity / 2u) / capacity) : 0u;
+    if (status->fifo1_load_percent > 100u) {
+        status->fifo1_load_percent = 100u;
+    }
+}
+
 typedef struct {
     int active;
     double t0;
@@ -6247,6 +6284,7 @@ static void *live_decode_worker_main(void *arg)
                 }
                 pthread_mutex_unlock(&live_decode_mutex);
 
+                live_decode_status_snapshot(&job->status);
 	                if (write_viterbi_output(job->fec,
                                          viterbi_dibits,
                                          viterbi_dibit_count,
@@ -6435,6 +6473,16 @@ static int live_decode_enqueue(rbdvbt_fec_t fec,
     live_decode_tail = job;
     live_decode_jobs++;
     live_decode_queued_symbols += symbol_count;
+    job->status.fifo1_queued_symbols = live_decode_queued_symbols;
+    job->status.fifo1_processing_symbols = live_decode_processing_symbols;
+    job->status.fifo1_capacity_symbols = LIVE_DECODE_MAX_QUEUED_SYMBOLS;
+    job->status.fifo1_load_percent =
+        (uint32_t)(((uint64_t)(live_decode_queued_symbols + live_decode_processing_symbols) * 100u +
+                    LIVE_DECODE_MAX_QUEUED_SYMBOLS / 2u) /
+                   LIVE_DECODE_MAX_QUEUED_SYMBOLS);
+    if (job->status.fifo1_load_percent > 100u) {
+        job->status.fifo1_load_percent = 100u;
+    }
     gui_fifo_submit(live_decode_queued_symbols,
                     live_decode_processing_symbols,
                     LIVE_DECODE_MAX_QUEUED_SYMBOLS);
@@ -7627,6 +7675,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         status.afc_delta_bins = afc_delta_bins;
         status.afc_trend_count = afc_trend_count;
         status.gui_enabled = cfg->gui;
+        live_decode_status_snapshot(&status);
 
         if (cfg->gui) {
             gui_constellation_submit(viterbi_symbols,
@@ -7646,6 +7695,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         if (cfg->live_mode) {
             if (avg_pilot_lock < LIVE_METADATA_PILOT_LOCK_MIN) {
                 live_health_note_low_pilot();
+                live_decode_status_snapshot(&status);
                 rbdvbt_status_publish_idle(&status, "pilot-drop", status.input_samples);
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                     fprintf(stderr,
@@ -8202,6 +8252,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     }
 
     init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+    live_decode_status_snapshot(&status);
     rbdvbt_status_publish_idle(&status, "processing", (uint64_t)count);
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
         rbdvbt_iq_stats_print(stderr, &stats);
@@ -8234,6 +8285,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                     count);
         }
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+        live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "resample", (uint64_t)stats.samples);
     }
 
@@ -8280,6 +8332,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                     count);
         }
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+        live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "resample", (uint64_t)stats.samples);
     }
     t_resample = monotonic_seconds();
@@ -8289,6 +8342,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         gi_len = guard_samples(fft_size, effective_cfg.guard_interval);
         symbol_len = fft_size + gi_len;
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+        live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "auto-gi", (uint64_t)stats.samples);
     } else if (gi_len == 0 || symbol_len <= fft_size) {
         gi_len = guard_samples(fft_size, effective_cfg.guard_interval);
@@ -8487,9 +8541,11 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     }
 
     if (fft_size == RBDVBT_DVBT_2K_FFT_SIZE) {
+        live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "demod", (uint64_t)stats.samples);
         rc = write_dvbt2k_qpsk_constellation(&effective_cfg, samples, count, start, gi_len, symbol_len, cfo_hz);
     } else {
+        live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "demod", (uint64_t)stats.samples);
         rc = write_constellation(&effective_cfg, samples, count, start, fft_size, gi_len, symbol_len, cfo_hz);
     }

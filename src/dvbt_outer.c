@@ -2640,6 +2640,10 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     fprintf(f, "  \"afc_delta_bins\": %d,\n", status->afc_delta_bins);
     fprintf(f, "  \"afc_trend_count\": %u,\n", status->afc_trend_count);
     fprintf(f, "  \"symbol_phase\": %d,\n", status->symbol_phase);
+    fprintf(f, "  \"fifo1_queued_symbols\": %u,\n", status->fifo1_queued_symbols);
+    fprintf(f, "  \"fifo1_processing_symbols\": %u,\n", status->fifo1_processing_symbols);
+    fprintf(f, "  \"fifo1_capacity_symbols\": %u,\n", status->fifo1_capacity_symbols);
+    fprintf(f, "  \"fifo1_load_percent\": %u,\n", status->fifo1_load_percent);
     fprintf(f, "  \"pe\": %u,\n", pe);
     fprintf(f, "  \"service_id\": %u,\n", display_v->service_id);
     fprintf(f, "  \"program_id\": %u,\n", display_v->program_id);

@@ -28,6 +28,10 @@ typedef struct {
     int32_t afc_delta_bins;
     uint32_t afc_trend_count;
     int gui_enabled;
+    uint32_t fifo1_queued_symbols;
+    uint32_t fifo1_processing_symbols;
+    uint32_t fifo1_capacity_symbols;
+    uint32_t fifo1_load_percent;
 } rbdvbt_status_context_t;
 
 typedef struct {
