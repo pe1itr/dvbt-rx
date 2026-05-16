@@ -4750,7 +4750,7 @@ typedef struct {
 typedef struct {
     int valid;
     rbdvbt_fec_t fec;
-    float metrics[128];
+    double metrics[128];
 } live_viterbi_state_t;
 
 static live_viterbi_state_t live_viterbi_state;
@@ -6440,7 +6440,13 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
 	        } else {
                 if (status != NULL && status->live_mode) {
                     live_viterbi_stream_reset();
-                    live_viterbi_state.valid = 0;
+                    if (continuous &&
+                        live_viterbi_state.valid &&
+                        live_viterbi_state.fec == fec) {
+                        initial_metrics = live_viterbi_state.metrics;
+                    } else {
+                        live_viterbi_state.valid = 0;
+                    }
                 }
 	            if (decode_viterbi_bytes(fec,
 	                                     dibits,
@@ -6496,7 +6502,7 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
                 live_viterbi_state.valid = 0;
             } else if (rc == 0) {
                 for (uint32_t s = 0; s < 128u; ++s) {
-                    live_viterbi_state.metrics[s] = (float)final_metrics[s];
+                    live_viterbi_state.metrics[s] = final_metrics[s];
                 }
                 live_viterbi_state.fec = fec;
                 live_viterbi_state.valid = 1;
