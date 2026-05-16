@@ -1263,7 +1263,7 @@ static outer_scan_policy_t outer_scan_policy_for_status(const rbdvbt_status_cont
         p.hard_fail_limit = 3u;
         p.low_pilot_reset_limit = 3u;
     } else {
-        observe_s = 0.85;
+        observe_s = 0.60;
         p.rs_probe_blocks = 64u;
         p.sync_scan_blocks = 256u;
         p.min_rs_ok = 2u;
