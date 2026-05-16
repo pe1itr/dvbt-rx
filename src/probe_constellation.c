@@ -1782,13 +1782,6 @@ static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_
     if (live_iq_ring.count < want && live_iq_ring.eof) {
         want = live_iq_ring.count;
     }
-    if (live_iq_ring.count > want) {
-        size_t drop_count = live_iq_ring.count - want;
-
-        live_iq_ring.head = (live_iq_ring.head + drop_count) % live_iq_ring.cap;
-        live_iq_ring.count -= drop_count;
-        live_iq_ring.overrun_samples += (uint64_t)drop_count;
-    }
     while (got < want && live_iq_ring.count > 0u) {
         out[got++] = live_iq_ring.items[live_iq_ring.head];
         live_iq_ring.head = (live_iq_ring.head + 1u) % live_iq_ring.cap;
