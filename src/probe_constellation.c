@@ -5053,7 +5053,7 @@ static uint32_t live_decode_invalidate_queued(const char *reason)
 
 #define LIVE_METADATA_PILOT_LOCK_MIN 0.45
 #define LIVE_METADATA_PILOT_LOCK_STRONG 0.55
-#define LIVE_DECODE_PILOT_LOCK_MIN 0.80
+#define LIVE_DECODE_PILOT_LOCK_MIN 0.60
 #define LIVE_METADATA_SEARCH_RADIUS 96u
 #define LIVE_METADATA_REFINE_SYMBOLS 4u
 #define LIVE_METADATA_VERIFY_SYMBOLS 8u
@@ -8080,7 +8080,6 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 live_viterbi_state.valid = 0;
                 (void)live_decode_invalidate_queued("low-pilot");
                 rbdvbt_outer_reset_live_stream();
-                live_frontend_cursor.valid = 0;
                 rc = 0;
                 goto done;
             }
