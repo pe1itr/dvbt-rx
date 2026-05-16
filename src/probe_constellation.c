@@ -106,7 +106,10 @@ typedef struct {
     size_t cap;
     size_t head;
     size_t count;
+    size_t max_count;
     uint64_t overrun_samples;
+    uint64_t producer_waits;
+    uint64_t producer_wait_samples;
 } live_iq_ring_t;
 
 static live_iq_ring_t live_iq_ring = {
@@ -118,6 +121,9 @@ static live_iq_ring_t live_iq_ring = {
     0,
     RBDVBT_INPUT_S16,
     NULL,
+    0u,
+    0u,
+    0u,
     0u,
     0u,
     0u,
@@ -1622,6 +1628,8 @@ static void live_iq_ring_push(const rbdvbt_complex_t *samples, size_t count)
         size_t n;
 
         while (live_iq_ring.count >= live_iq_ring.cap) {
+            live_iq_ring.producer_waits++;
+            live_iq_ring.producer_wait_samples += (uint64_t)count;
             pthread_cond_wait(&live_iq_ring.not_full, &live_iq_ring.mutex);
         }
 
@@ -1633,6 +1641,9 @@ static void live_iq_ring_push(const rbdvbt_complex_t *samples, size_t count)
             live_iq_ring.items[pos].re = samples[n].i;
             live_iq_ring.items[pos].im = samples[n].q;
             live_iq_ring.count++;
+        }
+        if (live_iq_ring.count > live_iq_ring.max_count) {
+            live_iq_ring.max_count = live_iq_ring.count;
         }
         samples += write_count;
         count -= write_count;
@@ -1686,9 +1697,12 @@ static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples
     live_iq_ring.cap = cap;
     live_iq_ring.head = 0u;
     live_iq_ring.count = 0u;
+    live_iq_ring.max_count = 0u;
     live_iq_ring.eof = 0;
     live_iq_ring.format = format;
     live_iq_ring.overrun_samples = 0u;
+    live_iq_ring.producer_waits = 0u;
+    live_iq_ring.producer_wait_samples = 0u;
     live_iq_ring.started = 1;
     pthread_mutex_unlock(&live_iq_ring.mutex);
 
@@ -1707,6 +1721,31 @@ static int live_iq_ring_start(rbdvbt_input_format_t format, size_t chunk_samples
         fprintf(stderr, "[iqring] started capacity_samples=%zu chunk_samples=%zu\n", cap, chunk_samples);
     }
     return 0;
+}
+
+static void live_iq_ring_snapshot(size_t *fill,
+                                  size_t *capacity,
+                                  size_t *max_fill,
+                                  uint64_t *producer_waits,
+                                  uint64_t *producer_wait_samples)
+{
+    pthread_mutex_lock(&live_iq_ring.mutex);
+    if (fill != NULL) {
+        *fill = live_iq_ring.count;
+    }
+    if (capacity != NULL) {
+        *capacity = live_iq_ring.cap;
+    }
+    if (max_fill != NULL) {
+        *max_fill = live_iq_ring.max_count;
+    }
+    if (producer_waits != NULL) {
+        *producer_waits = live_iq_ring.producer_waits;
+    }
+    if (producer_wait_samples != NULL) {
+        *producer_wait_samples = live_iq_ring.producer_wait_samples;
+    }
+    pthread_mutex_unlock(&live_iq_ring.mutex);
 }
 
 static size_t live_iq_ring_read(complexf_t *out, size_t want, uint64_t *overrun_delta)
@@ -4802,9 +4841,20 @@ static void live_health_maybe_emit_locked(double now)
             live_health.snr_sum / (double)live_health.chunks : 0.0;
         double lock_min = live_health.lock_min < 1.0e8 ? live_health.lock_min : 0.0;
         double snr_min = live_health.snr_min < 1.0e8 ? live_health.snr_min : 0.0;
+        size_t iq_fill = 0u;
+        size_t iq_capacity = 0u;
+        size_t iq_max_fill = 0u;
+        uint64_t iq_waits = 0u;
+        uint64_t iq_wait_samples = 0u;
+
+        live_iq_ring_snapshot(&iq_fill,
+                              &iq_capacity,
+                              &iq_max_fill,
+                              &iq_waits,
+                              &iq_wait_samples);
 
         fprintf(stderr,
-                "[health] %.1fs chunks=%u lock_min=%.5f lock_avg=%.5f snr_min=%.2fdB snr_avg=%.2fdB cont_bad=%u max_delta=%llu max_phase_delta=%llu fifo_max=%u fifo_drops=%u fifo_drop_symbols=%u low_pilot=%u packets=%u rs_uncorr=%u cc=%u tei=%u sync_bad=%u outer_acquire_pending=%zu outer_state=%s rs_bad=%u rs_corrected=%u rs_uncorrectable=%u written_packets=%u\n",
+                "[health] %.1fs chunks=%u lock_min=%.5f lock_avg=%.5f snr_min=%.2fdB snr_avg=%.2fdB cont_bad=%u max_delta=%llu max_phase_delta=%llu fifo_max=%u fifo_drops=%u fifo_drop_symbols=%u low_pilot=%u packets=%u rs_uncorr=%u cc=%u tei=%u sync_bad=%u iq_fill=%zu/%zu iq_max=%zu iq_waits=%llu iq_wait_samples=%llu outer_acquire_pending=%zu outer_state=%s rs_bad=%u rs_corrected=%u rs_uncorrectable=%u written_packets=%u\n",
                 elapsed,
                 live_health.chunks,
                 lock_min,
@@ -4823,6 +4873,11 @@ static void live_health_maybe_emit_locked(double now)
                 live_health.cc_errors,
                 live_health.transport_errors,
                 live_health.sync_bad,
+                iq_fill,
+                iq_capacity,
+                iq_max_fill,
+                (unsigned long long)iq_waits,
+                (unsigned long long)iq_wait_samples,
                 live_health.outer_acquire_pending,
                 live_health.outer_state,
                 live_health.rs_bad,
