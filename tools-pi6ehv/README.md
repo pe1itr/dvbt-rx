@@ -104,6 +104,17 @@ of fout gedetecteerde audiostream de SRT MPEG-TS output niet kan blokkeren met
 `sample rate not set`. Als audio later betrouwbaar nodig is, kan de map bewust
 worden aangepast, bijvoorbeeld met `FFMPEG_MAP=0`.
 
+De SRT-output wordt standaard opnieuw gecodeerd naar 960x540 H.264:
+
+```sh
+FFMPEG_SCALE=960:540 tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+960x540 is exact 16:9 en werkt beter met SRT-ingangen die geen kleine DATV-
+resolutie accepteren. Zet `FFMPEG_SCALE=off` om terug te gaan naar stream-copy
+zonder opschalen. De bitrate staat standaard op `900k` en kan met
+`FFMPEG_VIDEO_BITRATE` worden aangepast.
+
 ffmpeg stderr wordt standaard tijdelijk gelogd in de run-directory onder `/tmp`
 en bij cleanup verwijderd. Zet `FFMPEGLOG=/pad/naar/ffmpeg.log` als je die log
 voor diagnose wilt bewaren. De watchdog stopt de hele pipeline wanneer ffmpeg

@@ -33,6 +33,10 @@ ffmpeg_loglevel="${FFMPEG_LOGLEVEL:-error}"
 ffmpeg_probesize="${FFMPEG_PROBESIZE:-2000000}"
 ffmpeg_analyzeduration="${FFMPEG_ANALYZEDURATION:-2000000}"
 ffmpeg_map="${FFMPEG_MAP:-0:v:0}"
+ffmpeg_scale="${FFMPEG_SCALE:-960:540}"
+ffmpeg_video_bitrate="${FFMPEG_VIDEO_BITRATE:-900k}"
+ffmpeg_video_maxrate="${FFMPEG_VIDEO_MAXRATE:-${ffmpeg_video_bitrate}}"
+ffmpeg_video_bufsize="${FFMPEG_VIDEO_BUFSIZE:-1800k}"
 video_start="${WAIT_VIDEO_START:-1}"
 enable_gui="${GUI:-0}"
 udp_ts="${UDP_TS:-${UDP_OUT:-127.0.0.1:10000}}"
@@ -73,6 +77,8 @@ Environment:
   FFMPEGLOG       ffmpeg log path. Default: ${ffmpeglog_help}
   FFMPEG_LOGLEVEL ffmpeg loglevel. Default: ${ffmpeg_loglevel}
   FFMPEG_MAP      ffmpeg stream map for SRT output. Default: ${ffmpeg_map}
+  FFMPEG_SCALE    SRT video scale WIDTH:HEIGHT, or off to stream-copy. Default: ${ffmpeg_scale}
+  FFMPEG_VIDEO_BITRATE scaled H.264 target bitrate. Default: ${ffmpeg_video_bitrate}
   WATCHDOG_ENABLED monitor and stop/restart pipeline when set to 1. Default: ${watchdog_enabled}
   LOCK_LOSS_TIMEOUT seconds without lock after first lock before watchdog action. Default: ${lock_loss_timeout}
   STATUS_STALE_TIMEOUT seconds without fresh JSON after first lock before watchdog action. Default: ${status_stale_timeout}
@@ -311,7 +317,27 @@ run_pipeline_once() {
         -analyzeduration "${ffmpeg_analyzeduration}"
         -i "${current_ffmpeg_ts_input}"
         -map "${ffmpeg_map}"
-        -c copy
+    )
+    if [ "${ffmpeg_scale}" = "off" ] || [ "${ffmpeg_scale}" = "copy" ]; then
+        ffmpeg_args+=(
+            -c copy
+        )
+    else
+        ffmpeg_width="${ffmpeg_scale%%:*}"
+        ffmpeg_height="${ffmpeg_scale#*:}"
+        ffmpeg_args+=(
+            -vf "scale=${ffmpeg_width}:${ffmpeg_height}:force_original_aspect_ratio=decrease,pad=${ffmpeg_width}:${ffmpeg_height}:(ow-iw)/2:(oh-ih)/2"
+            -c:v libx264
+            -preset ultrafast
+            -tune zerolatency
+            -b:v "${ffmpeg_video_bitrate}"
+            -maxrate "${ffmpeg_video_maxrate}"
+            -bufsize "${ffmpeg_video_bufsize}"
+            -pix_fmt yuv420p
+            -an
+        )
+    fi
+    ffmpeg_args+=(
         -f mpegts
         "${srt_url}"
     )
