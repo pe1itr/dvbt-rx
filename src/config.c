@@ -161,6 +161,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
     cfg->status_period_packets = 100;
     cfg->log_level = RBDVBT_LOG_INFO;
     cfg->afc_enabled = 0;
+    cfg->bench_viterbi_pairs = 4000000u;
 
     for (i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -185,6 +186,15 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
         } else if (strcmp(arg, "--gui") == 0) {
             cfg->gui = 1;
             cfg->probe_constellation = 1;
+        } else if (strcmp(arg, "--bench-viterbi") == 0) {
+            cfg->bench_viterbi = 1;
+        } else if (strcmp(arg, "--bench-viterbi-pairs") == 0 && i + 1 < argc) {
+            cfg->bench_viterbi = 1;
+            if (parse_u32(argv[++i], &cfg->bench_viterbi_pairs) != 0 ||
+                cfg->bench_viterbi_pairs == 0u) {
+                fprintf(stderr, "invalid --bench-viterbi-pairs value\n");
+                return -1;
+            }
         } else if (strcmp(arg, "--resample-x4") == 0) {
             cfg->resample_x4 = 1;
         } else if (strcmp(arg, "--resample-to-dvbt-rate") == 0) {
@@ -342,7 +352,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
         }
     }
 
-    if (cfg->show_help || cfg->show_version) {
+    if (cfg->show_help || cfg->show_version || cfg->bench_viterbi) {
         return 0;
     }
     if (!cfg->use_stdin) {

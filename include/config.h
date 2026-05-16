@@ -96,6 +96,8 @@ typedef struct {
     const char *fine_timing_svg;
     uint32_t highres_fft_size;
     int gui;
+    int bench_viterbi;
+    uint32_t bench_viterbi_pairs;
     int verbose;
     int show_help;
     int show_version;

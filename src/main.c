@@ -1,4 +1,5 @@
 #include "config.h"
+#include "probe_constellation.h"
 #include "receiver.h"
 
 #include <stdio.h>
@@ -34,6 +35,9 @@ int main(int argc, char **argv)
     if (cfg.show_version) {
         printf("rbdvbt_rx %s\n", RBDVBT_VERSION);
         return 0;
+    }
+    if (cfg.bench_viterbi) {
+        return rbdvbt_run_viterbi_benchmark(cfg.bench_viterbi_pairs);
     }
 
     return rbdvbt_run_receiver(&cfg);
