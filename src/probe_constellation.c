@@ -5053,7 +5053,8 @@ static uint32_t live_decode_invalidate_queued(const char *reason)
 
 #define LIVE_METADATA_PILOT_LOCK_MIN 0.45
 #define LIVE_METADATA_PILOT_LOCK_STRONG 0.55
-#define LIVE_DECODE_PILOT_LOCK_MIN 0.60
+#define LIVE_DECODE_PILOT_LOCK_MIN 0.70
+#define LIVE_GRDVBT_TRACK_SCORE_MIN 0.70
 #define LIVE_METADATA_SEARCH_RADIUS 96u
 #define LIVE_METADATA_REFINE_SYMBOLS 4u
 #define LIVE_METADATA_VERIFY_SYMBOLS 8u
@@ -8074,6 +8075,9 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 live_status_hold_clear();
                 live_afc_clear();
                 live_symbol_continuity_ok = 0;
+                if (avg_pilot_lock < LIVE_METADATA_PILOT_LOCK_MIN) {
+                    live_frontend_cursor.valid = 0;
+                }
                 live_soft_dibit_fifo.count = 0u;
                 live_soft_dibit_fifo.symbol_count = 0u;
                 live_viterbi_stream_reset();
@@ -8791,8 +8795,6 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                                                            LIVE_GRDVBT_TRACK_RADIUS,
                                                            &score,
                                                            &corr);
-            used_live_sync_hint = 1;
-            live_symbol_continuity_ok = 1;
             if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
                 fprintf(stderr,
                         "[sync] grdvbt-track expected_abs=%llu selected_abs=%llu predicted_local=%u local=%u symbol_delta=%lld radius=%u score=%.4f\n",
@@ -8803,6 +8805,18 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                         (long long)predicted_symbol_delta,
                         LIVE_GRDVBT_TRACK_RADIUS,
                         score);
+            }
+            if (score >= LIVE_GRDVBT_TRACK_SCORE_MIN) {
+                used_live_sync_hint = 1;
+                live_symbol_continuity_ok = 1;
+            } else if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
+                fprintf(stderr,
+                        "[sync] grdvbt-track reject score=%.4f min=%.2f expected_abs=%llu selected_abs=%llu local=%u; falling back to acquire\n",
+                        score,
+                        LIVE_GRDVBT_TRACK_SCORE_MIN,
+                        (unsigned long long)expected_abs,
+                        (unsigned long long)selected_abs,
+                        start);
             }
         }
     }
