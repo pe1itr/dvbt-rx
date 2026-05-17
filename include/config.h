@@ -109,6 +109,7 @@ void rbdvbt_print_usage(const char *argv0);
 void rbdvbt_print_info(const char *argv0);
 int rbdvbt_log_enabled(rbdvbt_log_level_t level);
 void rbdvbt_log_set_level(rbdvbt_log_level_t level);
+void rbdvbt_log_printf(rbdvbt_log_level_t level, const char *fmt, ...);
 const char *rbdvbt_log_level_name(rbdvbt_log_level_t level);
 const char *rbdvbt_input_format_name(rbdvbt_input_format_t fmt);
 const char *rbdvbt_symbol_rate_name(rbdvbt_symbol_rate_t sr);

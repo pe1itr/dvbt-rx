@@ -15,17 +15,17 @@ static void print_config(const rbdvbt_config_t *cfg)
         return;
     }
 
-    fprintf(stderr,
-            "[config] input=stdin format=%s sample_rate=%u sr=%s gi=%s qpsk=1 ts_out=%s stdout=ts-only live=%d gui=%d live_symbols=%u loglevel=%s\n",
-            rbdvbt_input_format_name(cfg->input_format),
-            cfg->sample_rate_hz,
-            rbdvbt_symbol_rate_name(cfg->symbol_rate),
-            rbdvbt_guard_interval_name(cfg->guard_interval),
-            cfg->ts_out != NULL ? cfg->ts_out : "-",
-            cfg->live_mode,
-            cfg->gui,
-            cfg->live_frontend_symbols != 0u ? cfg->live_frontend_symbols : RBDVBT_LIVE_TARGET_SYMBOLS_DEFAULT,
-            rbdvbt_log_level_name(cfg->log_level));
+    rbdvbt_log_printf(RBDVBT_LOG_INFO,
+                      "[config] input=stdin format=%s sample_rate=%u sr=%s gi=%s qpsk=1 ts_out=%s stdout=ts-only live=%d gui=%d live_symbols=%u loglevel=%s\n",
+                      rbdvbt_input_format_name(cfg->input_format),
+                      cfg->sample_rate_hz,
+                      rbdvbt_symbol_rate_name(cfg->symbol_rate),
+                      rbdvbt_guard_interval_name(cfg->guard_interval),
+                      cfg->ts_out != NULL ? cfg->ts_out : "-",
+                      cfg->live_mode,
+                      cfg->gui,
+                      cfg->live_frontend_symbols != 0u ? cfg->live_frontend_symbols : RBDVBT_LIVE_TARGET_SYMBOLS_DEFAULT,
+                      rbdvbt_log_level_name(cfg->log_level));
 }
 
 static int run_live_constellation_probe(const rbdvbt_config_t *cfg)
@@ -71,25 +71,25 @@ static int run_live_constellation_probe(const rbdvbt_config_t *cfg)
             if (live_cfg.max_samples == 0u ||
                 (cfg->live_frontend_symbols != 0u && live_cfg.max_samples > target_input_samples)) {
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                    fprintf(stderr,
-                            "[live] using frontend chunk target=%u symbols max_samples=%llu%s\n",
-                            live_target_symbols,
-                            (unsigned long long)target_input_samples,
-                            cfg->max_samples != 0u ? " capped-from-config" : "");
+                    rbdvbt_log_printf(RBDVBT_LOG_INFO,
+                                      "[live] using frontend chunk target=%u symbols max_samples=%llu%s\n",
+                                      live_target_symbols,
+                                      (unsigned long long)target_input_samples,
+                                      cfg->max_samples != 0u ? " capped-from-config" : "");
                 }
                 live_cfg.max_samples = target_input_samples;
             } else if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) && cfg->max_samples != 0u) {
-                fprintf(stderr,
-                        "[live] using explicit max_samples=%llu; live target=%u symbols is not capping this run\n",
-                        (unsigned long long)live_cfg.max_samples,
-                        live_target_symbols);
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
+                                  "[live] using explicit max_samples=%llu; live target=%u symbols is not capping this run\n",
+                                  (unsigned long long)live_cfg.max_samples,
+                                  live_target_symbols);
             }
             if (live_cfg.probe_symbols < live_target_symbols) {
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                    fprintf(stderr,
-                            "[live] expanding probe_symbols from %u to %u for live frontend chunks\n",
-                            live_cfg.probe_symbols,
-                            live_target_symbols);
+                    rbdvbt_log_printf(RBDVBT_LOG_INFO,
+                                      "[live] expanding probe_symbols from %u to %u for live frontend chunks\n",
+                                      live_cfg.probe_symbols,
+                                      live_target_symbols);
                 }
                 live_cfg.probe_symbols = live_target_symbols;
             }
@@ -105,17 +105,17 @@ static int run_live_constellation_probe(const rbdvbt_config_t *cfg)
 
         chunks++;
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr, "[live] chunk=%llu start\n", (unsigned long long)chunks);
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG, "[live] chunk=%llu start\n", (unsigned long long)chunks);
         }
         rc = rbdvbt_run_constellation_probe(&live_cfg);
         if (rc == RBDVBT_PROBE_EOF) {
             rbdvbt_live_decoder_shutdown();
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
-                        "[live] eof chunks=%llu ok=%llu failed=%llu\n",
-                        (unsigned long long)(chunks - 1u),
-                        (unsigned long long)ok_chunks,
-                        (unsigned long long)failed_chunks);
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
+                                  "[live] eof chunks=%llu ok=%llu failed=%llu\n",
+                                  (unsigned long long)(chunks - 1u),
+                                  (unsigned long long)ok_chunks,
+                                  (unsigned long long)failed_chunks);
             }
             return 0;
         }
@@ -131,11 +131,11 @@ static int run_live_constellation_probe(const rbdvbt_config_t *cfg)
         }
         ok_chunks++;
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-            fprintf(stderr,
-                    "[live] chunk=%llu done ok=%llu failed=%llu\n",
-                    (unsigned long long)chunks,
-                    (unsigned long long)ok_chunks,
-                    (unsigned long long)failed_chunks);
+            rbdvbt_log_printf(RBDVBT_LOG_INFO,
+                              "[live] chunk=%llu done ok=%llu failed=%llu\n",
+                              (unsigned long long)chunks,
+                              (unsigned long long)ok_chunks,
+                              (unsigned long long)failed_chunks);
         }
     }
 }

@@ -2,11 +2,39 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static rbdvbt_log_level_t global_log_level = RBDVBT_LOG_INFO;
+
+static void log_timestamp_prefix(FILE *stream, rbdvbt_log_level_t level)
+{
+    time_t now;
+    struct tm tm_now;
+    char timestamp[40];
+
+    if (!(level == RBDVBT_LOG_INFO || level == RBDVBT_LOG_DEBUG)) {
+        return;
+    }
+
+    now = time(NULL);
+    {
+        struct tm *local_now = localtime(&now);
+        if (local_now == NULL) {
+            memset(&tm_now, 0, sizeof(tm_now));
+        } else {
+            tm_now = *local_now;
+        }
+    }
+    if (strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S%z", &tm_now) == 0u) {
+        snprintf(timestamp, sizeof(timestamp), "unknown-time");
+    }
+
+    fprintf(stream, "%s ", timestamp);
+}
 
 static int parse_u32(const char *text, uint32_t *out)
 {
@@ -463,6 +491,20 @@ int rbdvbt_log_enabled(rbdvbt_log_level_t level)
 void rbdvbt_log_set_level(rbdvbt_log_level_t level)
 {
     global_log_level = level;
+}
+
+void rbdvbt_log_printf(rbdvbt_log_level_t level, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!rbdvbt_log_enabled(level)) {
+        return;
+    }
+
+    log_timestamp_prefix(stderr, level);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
 }
 
 const char *rbdvbt_log_level_name(rbdvbt_log_level_t level)

@@ -117,3 +117,27 @@ void rbdvbt_iq_stats_print(FILE *stream, const rbdvbt_iq_stats_t *stats)
             (unsigned long long)stats->clipped_i,
             (unsigned long long)stats->clipped_q);
 }
+
+void rbdvbt_iq_stats_log(rbdvbt_log_level_t level, const rbdvbt_iq_stats_t *stats)
+{
+    double mean_i = 0.0;
+    double mean_q = 0.0;
+    double rms = 0.0;
+
+    if (stats->samples != 0) {
+        mean_i = stats->sum_i / (double)stats->samples;
+        mean_q = stats->sum_q / (double)stats->samples;
+        rms = sqrt(stats->sum_power / (double)stats->samples);
+    }
+
+    rbdvbt_log_printf(level,
+                      "[input] samples=%llu mean_i=%.7f mean_q=%.7f rms=%.7f peak_i=%.7f peak_q=%.7f clipped_i=%llu clipped_q=%llu\n",
+                      (unsigned long long)stats->samples,
+                      mean_i,
+                      mean_q,
+                      rms,
+                      stats->peak_abs_i,
+                      stats->peak_abs_q,
+                      (unsigned long long)stats->clipped_i,
+                      (unsigned long long)stats->clipped_q);
+}

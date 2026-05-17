@@ -392,6 +392,7 @@ Linux/X11 vensterinterface.
 | `--status-period-packets N` | Statusupdate elke `N` TS packets; tijdens input elke `N * 4096` IQ samples. |
 | `afc_advised` statusveld | JSON/status-watch advies om `--afc` te gebruiken wanneer een kleine carrier-bin drifttrend zichtbaar is; dit advies corrigeert niets zolang `--afc` uit staat. |
 | `--loglevel LEVEL` | Logdetail: `quiet`, `error`, `warn`, `info`, `debug` of `trace`. Default is `info`; gebruik `quiet` voor geen normale receiver-logoutput en `debug` voor uitgebreide DSP/FIFO-analyse. |
+| info/debug logs | Info- en debugregels op `stderr` krijgen een lokale wall-clock timestamp zodat ze met realtime waarnemingen te correleren zijn; warn/error-regels blijven zonder timestamp. |
 | `--version` | Toon het versienummer en stop. |
 | `--help`, `--info` | Toon programma-informatie, ondersteunde modes en opties, en stop. |
 

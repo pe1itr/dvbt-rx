@@ -319,7 +319,7 @@ static void live_outer_alignment_note_result(uint32_t rs_ok,
     if (clear) {
         live_outer_alignment.fail_jobs++;
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_INFO,
                     "[outer-state] relock deint_phase=%u rs_phase=%u block_phase=%u fail_jobs=%u rs_ok=%u rs_uncorrectable=%u written=%u\n",
                     live_outer_alignment.deint_phase,
                     live_outer_alignment.rs_phase,
@@ -340,7 +340,7 @@ static void live_outer_alignment_note_result(uint32_t rs_ok,
         live_outer_alignment.rs_phase = (live_outer_alignment.rs_phase + RS_BLOCK_LEN - advance) % RS_BLOCK_LEN;
         live_outer_alignment.block_phase = (live_outer_alignment.block_phase + processed_blocks) & 7u;
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                     "[outer-state] advanced stream_byte_offset=%llu consumed_deint_bytes=%llu next_rs_phase=%u next_block_phase=%u processed_blocks=%u deint_count=%zu\n",
                     (unsigned long long)live_outer_alignment.stream_byte_offset,
                     (unsigned long long)live_outer_alignment.consumed_deint_bytes,
@@ -1602,7 +1602,7 @@ static int live_mpeg_sync_search(void)
                 live_mpeg_sync.phase8 = phase8;
                 live_mpeg_sync.fail_packets = 0u;
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                    fprintf(stderr,
+                    rbdvbt_log_printf(RBDVBT_LOG_INFO,
                             "[mpeg-sync] locked offset=%u phase8=%u buffered=%zu sync47=%u syncb8=%u\n",
                             offset,
                             live_mpeg_sync.phase8,
@@ -1643,7 +1643,7 @@ static int live_mpeg_sync_pop_packet(uint8_t *packet)
             live_mpeg_sync.fail_packets++;
         }
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                     "[mpeg-sync] weak expected=0x%02x got=0x%02x buffered=%zu fail_packets=%u; keeping cadence\n",
                     expected,
                     live_mpeg_sync.bytes[0],
@@ -1766,7 +1766,7 @@ __attribute__((unused)) static int live_outer_stream_acquire(const uint8_t *inne
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[outer-state] acquired leandvb_stream deint_phase=%u rs_phase=%u block_phase=%u skip=%zu buffered=%zu rs_probe_ok=%u sync_ok=%u\n",
                 best->deint_phase,
                 best->rs_phase,
@@ -2501,7 +2501,7 @@ static void ts_validator_report(const ts_validator_t *v)
          (v->sync_bad != 0u ||
           v->transport_errors != 0u ||
           v->cc_errors != 0u))) {
-        fprintf(stderr,
+        rbdvbt_log_printf(rbdvbt_log_enabled(RBDVBT_LOG_INFO) ? RBDVBT_LOG_INFO : RBDVBT_LOG_ERROR,
                 "[ts] packets=%u sync_bad=%u transport_errors=%u cc_errors=%u pat_packets=%u pmt_packets=%u sdt_packets=%u pmt_pid=%s pcr_pid=%s video_pid=%s video_type=0x%02x audio_pid=%s audio_type=0x%02x service=\"%s\" provider=\"%s\"\n",
                 v->packets,
                 v->sync_bad,
@@ -3205,7 +3205,7 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
         }
         if (live_grdvbt_outer.pending_count < policy.min_pending_bytes) {
             if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                         "[outer-state] grdvbt acquire accumulating pending=%zu need=%zu sr=%s\n",
                         live_grdvbt_outer.pending_count,
                         policy.min_pending_bytes,
@@ -3219,7 +3219,7 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
                                              &policy) != 0 ||
             !outer_candidate_is_acquirable(&best, &policy, &probation_lock)) {
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[outer-state] grdvbt acquire pending=%zu failed rs_ok=%u/%u sync_ok=%u/%u sync_only=%u sr=%s\n",
                         live_grdvbt_outer.pending_count,
                         best.rs_ok,
@@ -3255,7 +3255,7 @@ static int live_grdvbt_outer_process(const uint8_t *inner,
         start = best.deint_phase;
         drop_deint = OUTER_TRANSIENT + best.rs_phase;
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_INFO,
                     "[outer-state] acquired grdvbt_stream deint_phase=%u rs_phase=%u block_phase=%u drop_deint=%zu rs_probe_ok=%u sync_ok=%u probation=%d\n",
                     best.deint_phase,
                     best.rs_phase,
@@ -3354,7 +3354,7 @@ static int live_grdvbt_outer_realign_current(const uint8_t *inner,
         best.rs_ok == 0u ||
         !outer_candidate_is_acquirable(&best, &policy, &probation_lock)) {
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_INFO,
                     "[outer-state] local_realign failed rs_ok=%u/%u sync_ok=%u/%u sync_only=%u blocks=%u reason=%s\n",
                     best.rs_ok,
                     policy.min_rs_ok,
@@ -3381,7 +3381,7 @@ static int live_grdvbt_outer_realign_current(const uint8_t *inner,
     drop_deint = OUTER_TRANSIENT + best.rs_phase;
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[outer-state] local_realign acquired grdvbt_stream deint_phase=%u rs_phase=%u block_phase=%u drop_deint=%zu rs_probe_ok=%u sync_ok=%u probation=%d\n",
                 best.deint_phase,
                 best.rs_phase,
@@ -3605,7 +3605,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         status->pilot_lock < LIVE_GRDVBT_PILOT_LOCK_MIN) {
         if (!live_grdvbt_outer.valid) {
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[outer-state] skip low-pilot chunk pilot_lock=%.5f; keep pending acquisition bytes=%zu\n",
                         status->pilot_lock,
                         live_grdvbt_outer.pending_count);
@@ -3613,7 +3613,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         } else {
             live_grdvbt_outer.low_pilot_jobs++;
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[outer-state] skip low-pilot chunk pilot_lock=%.5f low_pilot_jobs=%u/%u; keeping outer cadence\n",
                         status->pilot_lock,
                         live_grdvbt_outer.low_pilot_jobs,
@@ -3621,7 +3621,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             }
             if (live_grdvbt_outer.low_pilot_jobs >= live_policy.low_pilot_reset_limit) {
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                    fprintf(stderr,
+                    rbdvbt_log_printf(RBDVBT_LOG_INFO,
                             "[outer-state] relock grdvbt_stream consecutive_low_pilot=%u; resetting outer cadence\n",
                             live_grdvbt_outer.low_pilot_jobs);
                 }
@@ -3702,7 +3702,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             written == 0u &&
             rs_uncorrectable > 0u) {
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[outer-state] local_realign attempt after nonproductive degraded job blocks=%u rs_uncorrectable=%u rs_buffer=%u\n",
                         processed_blocks,
                         rs_uncorrectable,
@@ -3735,7 +3735,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
             (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) &&
              (rs_uncorrectable != 0u || written == 0u))) {
-            fprintf(stderr,
+            rbdvbt_log_printf(rbdvbt_log_enabled(RBDVBT_LOG_INFO) ? RBDVBT_LOG_INFO : RBDVBT_LOG_ERROR,
                     "[outer] grdvbt_stream input_bytes=%llu deint_bytes=%llu rs_buffer=%u branch=%u block_phase=%u processed_blocks=%u written_packets=%u rs_bad=%u rs_corrected=%u rs_corrected_bytes=%u rs_uncorrectable=%u output=%s\n",
                     (unsigned long long)live_grdvbt_outer.input_bytes,
                     (unsigned long long)live_grdvbt_outer.deint_bytes,
@@ -3775,7 +3775,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
                 live_grdvbt_outer.hard_fail_jobs = 0u;
             }
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[outer-state] degraded grdvbt_stream fail_jobs=%u/%u hard_fail_jobs=%u/%u productive_fail_jobs=%u productive=%d rs_ok=%u rs_uncorrectable=%u written=%u rs_buffer=%u\n",
                         live_grdvbt_outer.fail_jobs,
                         live_policy.soft_fail_limit,
@@ -3793,14 +3793,14 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
                 live_grdvbt_outer.fail_jobs >= live_policy.soft_fail_limit) {
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                     if (hard_cadence_fail && live_grdvbt_outer.hard_fail_jobs >= live_policy.hard_fail_limit) {
-                        fprintf(stderr,
+                        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                                 "[outer-state] relock grdvbt_stream hard_cadence_fail jobs=%u blocks=%u rs_ok=%u written=%u; resetting outer cadence\n",
                                 live_grdvbt_outer.hard_fail_jobs,
                                 processed_blocks,
                                 rs_ok,
                                 written);
                     } else {
-                        fprintf(stderr,
+                        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                                 "[outer-state] relock grdvbt_stream consecutive_fail_jobs=%u; resetting outer cadence\n",
                                 live_grdvbt_outer.fail_jobs);
                     }
@@ -3861,7 +3861,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
 	            fprintf(stderr, "[outer] failed to append FIFO2 bytes to MPEG sync buffer\n");
 	            goto done;
 	        } else if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-	            fprintf(stderr,
+	            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
 	                    "[mpeg-sync] appended bytes=%zu buffered=%zu synchronized=%d phase8=%u\n",
 	                    inner_count,
 	                    live_mpeg_sync.count,
@@ -3997,7 +3997,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
             (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) &&
              (rs_uncorrectable != 0u || written == 0u))) {
-            fprintf(stderr,
+            rbdvbt_log_printf(rbdvbt_log_enabled(RBDVBT_LOG_INFO) ? RBDVBT_LOG_INFO : RBDVBT_LOG_ERROR,
                     "[outer] leandvb_stream buffered=%zu processed_blocks=%u block_phase=%u written_packets=%u rs_bad=%u rs_corrected=%u rs_corrected_bytes=%u rs_uncorrectable=%u output=%s\n",
                     live_outer_stream.count,
                     processed_blocks,
@@ -4015,7 +4015,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             (rs_ok == 0u || rs_uncorrectable >= rs_ok)) {
             live_outer_stream.fail_jobs++;
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[outer-state] relock leandvb_stream fail_jobs=%u rs_ok=%u rs_uncorrectable=%u written=%u buffered=%zu\n",
                         live_outer_stream.fail_jobs,
                         rs_ok,
@@ -4035,7 +4035,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             live_outer_alignment.stream_byte_offset = live_outer_stream.stream_byte_offset;
             live_outer_alignment.consumed_deint_bytes = live_outer_stream.stream_byte_offset;
             if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                         "[outer-state] advanced leandvb_stream stream_byte_offset=%llu next_block_phase=%u processed_blocks=%u buffered=%zu\n",
                         (unsigned long long)live_outer_stream.stream_byte_offset,
                         live_outer_stream.block_phase,
@@ -4074,7 +4074,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         }
         if (best.blocks == 0u || best.rs_ok == 0u) {
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[outer-state] fixed alignment failed deint_phase=%u rs_phase=%u block_phase=%u stream_byte_offset=%llu consumed_deint_bytes=%llu blocks=%u rs_ok=%u sync_ok=%u; rescanning\n",
                         live_outer_alignment.deint_phase,
                         live_outer_alignment.rs_phase,
@@ -4088,7 +4088,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
             live_outer_alignment.valid = 0;
             memset(&best, 0, sizeof(best));
         } else if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                     "[outer-state] using fixed alignment deint_phase=%u rs_phase=%u block_phase=%u stream_byte_offset=%llu consumed_deint_bytes=%llu rs_probe_ok=%u sync_ok=%u\n",
                     best.deint_phase,
                     best.rs_phase,
@@ -4108,7 +4108,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         if (live_mode && best.rs_ok > 0u) {
             live_outer_alignment_store(&best);
             if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[outer-state] acquired deint_phase=%u rs_phase=%u block_phase=%u stream_byte_offset=%llu consumed_deint_bytes=%llu rs_probe_ok=%u sync_ok=%u\n",
                         best.deint_phase,
                         best.rs_phase,
@@ -4263,7 +4263,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
         (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) &&
          (rs_uncorrectable != 0u || written == 0u))) {
-        fprintf(stderr,
+        rbdvbt_log_printf(rbdvbt_log_enabled(RBDVBT_LOG_INFO) ? RBDVBT_LOG_INFO : RBDVBT_LOG_ERROR,
                 "[outer] deint_phase=%u rs_phase=%u block_phase=%u scan_blocks=%u scan_rs_ok=%u scan_sync_ok=%u written_packets=%u rs_bad=%u rs_corrected=%u rs_corrected_bytes=%u rs_uncorrectable=%u output=%s\n",
                 best.deint_phase,
                 best.rs_phase,

@@ -1789,7 +1789,7 @@ static int live_iq_ring_start(rbdvbt_input_format_t format,
     }
     pthread_detach(live_iq_ring.thread);
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        fprintf(stderr, "[iqring] started capacity_samples=%zu chunk_samples=%zu\n", cap, chunk_samples);
+        rbdvbt_log_printf(RBDVBT_LOG_INFO, "[iqring] started capacity_samples=%zu chunk_samples=%zu\n", cap, chunk_samples);
     }
     return 0;
 }
@@ -2260,7 +2260,7 @@ static int resample_sinc_ratio_live(const complexf_t *in,
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                 "[resample] live-state out_abs=%llu tail=%zu next_x=%.6f emitted=%zu skipped_in=%llu skipped_out=%llu\n",
                 (unsigned long long)st->output_seq,
                 st->tail_count,
@@ -2276,7 +2276,7 @@ static int resample_sinc_ratio_live(const complexf_t *in,
         double rf_ms = (double)in_count * 1000.0 / (double)input_rate_hz;
         double load_pct = rf_ms > 0.0 ? (time_ms * 100.0 / rf_ms) : 0.0;
 
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[resampler] in=%zu out=%zu taps=%d phases=%d time_ms=%.3f rf_ms=%.3f load_pct=%.1f\n",
                 in_count,
                 out_n,
@@ -2384,7 +2384,7 @@ static int live_ofdm_prepend_tail(const rbdvbt_config_t *cfg,
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                 "[ofdm-live] prefix=%zu tail=%zu symbol_len=%u\n",
                 live_ofdm_prefix_count,
                 live_ofdm_buffer_state.tail_count,
@@ -2753,7 +2753,7 @@ static int write_cp_timing(const rbdvbt_config_t *cfg,
     *out_safe_corr = corrs[safe];
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                 "[cptiming] peak=%u peak_score=%.5f plateau=%u..%u safe=%u safe_score=%.5f csv=%s svg=%s\n",
                 best,
                 best_score,
@@ -5100,7 +5100,7 @@ static void live_health_maybe_emit_locked(double now)
                               &iq_waits,
                               &iq_wait_samples);
 
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[health] %.1fs chunks=%u lock_min=%.5f lock_avg=%.5f snr_min=%.2fdB snr_avg=%.2fdB cont_bad=%u max_delta=%llu max_phase_delta=%llu fifo_max=%u fifo_drops=%u fifo_drop_symbols=%u low_pilot=%u packets=%u rs_uncorr=%u cc=%u tei=%u sync_bad=%u iq_fill=%zu/%zu iq_max=%zu iq_drops=%llu iq_waits=%llu iq_wait_samples=%llu outer_acquire_pending=%zu outer_state=%s rs_bad=%u rs_corrected=%u rs_uncorrectable=%u written_packets=%u\n",
                 elapsed,
                 live_health.chunks,
@@ -5333,7 +5333,7 @@ static uint32_t live_decode_invalidate_queued_locked(const char *reason)
     pthread_cond_broadcast(&live_decode_space_cond);
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[fifo1] reset epoch=%llu reason=%s dropped_jobs=%zu dropped_symbols=%u processing_symbols=%u\n",
                 (unsigned long long)live_decode_epoch,
                 reason != NULL ? reason : "-",
@@ -6400,7 +6400,7 @@ static int write_selected_viterbi_output(rbdvbt_fec_t fec,
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                 "[viterbi] fec=%s input_dibits=%zu mother_pairs=%zu decoded_bits=%zu decoded_bytes=%zu best_metric=%.2f output=%s\n",
                 rbdvbt_fec_name(fec),
                 dibit_count,
@@ -6508,7 +6508,7 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
                         }
                     }
 		            if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-	                fprintf(stderr,
+	                rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
 	                        "[viterbi] live_stream=%s fec=%s traceback_bytes=%u emitted_bytes=%zu\n",
 	                        continuous && live_viterbi_stream.valid ? "continued" : "cold",
 	                        rbdvbt_fec_name(fec),
@@ -6550,7 +6550,7 @@ static int write_viterbi_output(rbdvbt_fec_t fec,
                                                        status != NULL && status->live_mode ? &outer_time : NULL);
                 if (status != NULL && status->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
                     output_t1 = monotonic_seconds();
-                    fprintf(stderr,
+                    rbdvbt_log_printf(RBDVBT_LOG_INFO,
                             "[viterbi-detail] seq=%llu symbols=%u dibits=%zu bytes=%zu depuncture=%.6fs acs=%.6fs traceback=%.6fs pack=%.6fs outer=%.6fs total=%.6fs\n",
                             (unsigned long long)seq_start,
                             symbol_count,
@@ -6895,7 +6895,7 @@ static void *live_decode_worker_main(void *arg)
         int worker_stale = 0;
 
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
 		                    "[fifo1] worker inner_start seq=%llu symbols=%u cells=%zu model_symbol=%u frontend_continuous=%d queued=%zu\n",
 	                    (unsigned long long)job->seq_start,
 	                    job->symbol_count,
@@ -7024,7 +7024,7 @@ static void *live_decode_worker_main(void *arg)
         }
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
             double worker_t1 = monotonic_seconds();
-	            fprintf(stderr,
+	            rbdvbt_log_printf(RBDVBT_LOG_INFO,
 	                    "[fifo1] worker_done seq=%llu processed_symbols=%u job_symbols=%u deint=%.3fs viterbi_outer=%.3fs elapsed=%.3fs status=%s\n",
 	                    (unsigned long long)job->seq_start,
 	                    processed_symbols,
@@ -7035,7 +7035,7 @@ static void *live_decode_worker_main(void *arg)
 	                    worker_stale ? "stale" : (worker_failed ? "failed" : "ok"));
         }
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr, "[fifo1] worker inner_done\n");
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG, "[fifo1] worker inner_done\n");
         }
         pthread_mutex_lock(&live_decode_mutex);
         if (live_decode_processing_symbols >= job->symbol_count) {
@@ -7148,7 +7148,7 @@ static int live_decode_enqueue(rbdvbt_fec_t fec,
                               live_decode_processing_symbols,
                               symbol_count);
         if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_INFO,
                     "[fifo1] backlog full dropping incoming_symbols=%u queued_symbols=%u processing_symbols=%u capacity_symbols=%u\n",
                     symbol_count,
                     live_decode_queued_symbols,
@@ -7195,7 +7195,7 @@ static int live_decode_enqueue(rbdvbt_fec_t fec,
                           0u);
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO) ||
         (rbdvbt_log_enabled(RBDVBT_LOG_ERROR) && live_decode_jobs > 2u)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(rbdvbt_log_enabled(RBDVBT_LOG_INFO) ? RBDVBT_LOG_INFO : RBDVBT_LOG_ERROR,
 		                "[fifo1] queued_inner seq=%llu symbols=%u cells=%zu model_symbol=%u frontend_continuous=%d queued=%zu queued_symbols=%u processing_symbols=%u\n",
 		                (unsigned long long)seq_start,
 		                symbol_count,
@@ -7336,7 +7336,7 @@ static int live_soft_dibit_fifo_process(rbdvbt_fec_t fec,
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
 	                "[softfifo] appended_seq=%llu appended_symbols=%u frame_symbols=%u buffered_symbols=%u buffered_dibits=%zu window_symbols=%u frontend_continuous=%d\n",
 	                (unsigned long long)append_seq,
                 symbol_count,
@@ -7366,7 +7366,7 @@ static int live_soft_dibit_fifo_process(rbdvbt_fec_t fec,
                                 status) : -1;
 
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                     "[frontend-batch] fifo1_window seq=%llu symbols=%u cells=%zu frontend_continuous=%d buffered_symbols=%u\n",
                     (unsigned long long)window_seq,
                     window_symbols,
@@ -7430,7 +7430,7 @@ static int live_soft_dibit_fifo_process(rbdvbt_fec_t fec,
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                 "[softfifo] after_consume seq_start=%llu buffered_symbols=%u buffered_dibits=%zu\n",
                 (unsigned long long)live_soft_dibit_fifo.seq_start,
                 live_soft_dibit_fifo.symbol_count,
@@ -7739,7 +7739,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
 
             if (available_symbols > max_symbols) {
                 if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-                    fprintf(stderr,
+                    rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                             "[ofdm-live] expanding demap symbols from %u to %u to avoid leaving complete OFDM symbols behind\n",
                             max_symbols,
                             available_symbols);
@@ -7877,7 +7877,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         }
 
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                     "[pilot-scan] best_bin_shift=%d conjugate=%d symbol_phase_mod4=%d pilot_lock=%.5f advisory_bin_shift=%d advisory_lock=%.5f scan_symbols=%u\n",
                     best_bin_shift,
                     best_conjugate,
@@ -7901,7 +7901,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         }
         total_symbols = max_symbols + skip_symbols;
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                     "[ofdm-live] demod_skip_symbols=%u demod_total_symbols=%u prefix=%zu\n",
                     skip_symbols,
                     total_symbols,
@@ -8280,7 +8280,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             }
 	    }
             if (cfg->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[frontend-cont] mode=%s first_abs=%llu expected_abs=%llu delta=%lld delta_symbols=%lld phase_delta=%llu start=%u skip=%u used=%u seq=%llu cursor_seq=%llu continuous=%d input_gap=%d bin=%d/%d afc_delta=%d afc_ok=%d afc_count=%u conj=%d/%d lock=%.5f\n",
                         live_frontend_sync_mode,
                         (unsigned long long)first_symbol_sample_abs,
@@ -8327,7 +8327,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
             (best_symbol_phase + (int)((skip_symbols + used_symbols) & 0x03u)) & 0x03;
         live_frontend_cursor.pilot_lock = pilot_lock_count > 0 ? pilot_lock_sum / (double)pilot_lock_count : 0.0;
 	        if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-	            fprintf(stderr,
+	            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
 		                    "[frontend-meta] seq=%llu symbols=%u first_abs=%llu next_abs=%llu expected_abs=%llu frontend_continuous=%d symbol_phase=%u local_symbol_phase=%d expected_symbol_phase=%d resamp_range=%llu..%llu\n",
 	                    (unsigned long long)frame_symbol_seq_start,
 	                    used_symbols,
@@ -8440,7 +8440,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                 if (hold_low_pilot) {
                     live_low_pilot_hold_count++;
                     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                        fprintf(stderr,
+                        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                                 "[dvbt2k] holding weak live chunk avg_pilot_lock=%.5f decode_min=%.2f metadata_min=%.2f snr=%.2fdB hold=%u/%u; preserving inner continuity\n",
                                 avg_pilot_lock,
                                 LIVE_DECODE_PILOT_LOCK_MIN,
@@ -8453,7 +8453,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                     goto done;
                 }
                 if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                    fprintf(stderr,
+                    rbdvbt_log_printf(RBDVBT_LOG_INFO,
                             "[dvbt2k] dropping weak live chunk avg_pilot_lock=%.5f decode_min=%.2f snr=%.2fdB; resetting inner continuity\n",
                             avg_pilot_lock,
                             LIVE_DECODE_PILOT_LOCK_MIN,
@@ -8524,7 +8524,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[dvbt2k] fft=2048 gi=%u symbol=%u symbols=%u data_carriers=%u demap_dibits=%llu avg_pilot_lock=%.5f snr=%.2fdB cfo=%.2fHz bin_shift=%d conjugate=%d symbol_phase=%d constellation=%s svg=%s demap=%s viterbi=%s ts=%s fec=%s\n",
                 gi_len,
                 symbol_len,
@@ -8547,7 +8547,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
 
     if (cfg->live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
         double demod_t1 = monotonic_seconds();
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[demod-time] pilot_scan=%.3fs symbols_fifo=%.3fs total=%.3fs\n",
                 demod_scan_t1 > demod_t0 ? demod_scan_t1 - demod_t0 : 0.0,
                 demod_t1 > demod_scan_t1 ? demod_t1 - demod_scan_t1 : 0.0,
@@ -8889,7 +8889,7 @@ static int write_constellation(const rbdvbt_config_t *cfg,
     }
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[probe] fft_size=%u gi_samples=%u symbol_samples=%u symbols=%u active_bins=%d data_bins=%d power_threshold=%.4g qpsk_threshold=%.4f cfo=%.2fHz constellation=%s svg=%s equalized=%s spectrum=%s metrics=%s\n",
                 fft_size,
                 gi_len,
@@ -9014,7 +9014,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     live_decode_status_snapshot(&status);
     rbdvbt_status_publish_idle(&status, "processing", (uint64_t)count);
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-        rbdvbt_iq_stats_print(stderr, &stats);
+        rbdvbt_iq_stats_log(RBDVBT_LOG_DEBUG, &stats);
     }
     remove_dc(samples, count);
 
@@ -9036,7 +9036,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         effective_cfg.sample_rate_hz *= 4u;
 
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                     "[resample] x4 sinc input_rate=%u output_rate=%u input_samples=%zu output_samples=%zu\n",
                     cfg->sample_rate_hz,
                     effective_cfg.sample_rate_hz,
@@ -9081,7 +9081,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         effective_cfg.sample_rate_hz = target_rate_hz;
 
         if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-            fprintf(stderr,
+            rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                     "[resample] dvbt-rate sinc input_rate=%u output_rate=%u ratio=%.9f ir=%u input_samples=%zu output_samples=%zu\n",
                     cfg->sample_rate_hz,
                     effective_cfg.sample_rate_hz,
@@ -9184,7 +9184,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                                                            &score,
                                                            &corr);
             if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                         "[sync] grdvbt-track expected_abs=%llu selected_abs=%llu predicted_local=%u local=%u symbol_delta=%lld radius=%u score=%.4f\n",
                         (unsigned long long)expected_abs,
                         (unsigned long long)selected_abs,
@@ -9198,7 +9198,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                 used_live_sync_hint = 1;
                 live_symbol_continuity_ok = 1;
             } else if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_INFO,
                         "[sync] grdvbt-track reject score=%.4f min=%.2f expected_abs=%llu selected_abs=%llu local=%u; falling back to acquire\n",
                         score,
                         LIVE_GRDVBT_TRACK_SCORE_MIN,
@@ -9237,7 +9237,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
              (2.0 * M_PI * (double)fft_size);
 
     if (rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[sync] start=%u score=%.4f corr_phase=%.4f cfo=%.2fHz sync_symbols=%u mode=%s\n",
                 start,
                 score,
@@ -9280,7 +9280,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
             cfo_hz = -atan2(corr.im, corr.re) * (double)effective_cfg.sample_rate_hz /
                      (2.0 * M_PI * (double)fft_size);
             if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
-                fprintf(stderr,
+                rbdvbt_log_printf(RBDVBT_LOG_DEBUG,
                         "[sync] fine-selected start=%u cp_score=%.4f cfo=%.2fHz fine_metric=%.6f\n",
                         start,
                         score,
@@ -9321,7 +9321,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     t_demod = monotonic_seconds();
 
     if (effective_cfg.live_mode && rbdvbt_log_enabled(RBDVBT_LOG_INFO)) {
-        fprintf(stderr,
+        rbdvbt_log_printf(RBDVBT_LOG_INFO,
                 "[frontend-time] read=%.3fs resample=%.3fs prep=%.3fs aux=%.3fs sync=%.3fs demod_fifo=%.3fs total=%.3fs samples=%zu\n",
                 t_read - t_start,
                 t_resample - t_read,

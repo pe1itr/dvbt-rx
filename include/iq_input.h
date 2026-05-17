@@ -33,5 +33,6 @@ void rbdvbt_iq_stats_update(rbdvbt_iq_stats_t *stats,
                             const rbdvbt_complex_t *samples,
                             size_t count);
 void rbdvbt_iq_stats_print(FILE *stream, const rbdvbt_iq_stats_t *stats);
+void rbdvbt_iq_stats_log(rbdvbt_log_level_t level, const rbdvbt_iq_stats_t *stats);
 
 #endif
