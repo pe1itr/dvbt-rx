@@ -9,6 +9,18 @@ een bestand.
 Het programma is bedoeld voor Portsdown-achtige DVB-T signalen met lage
 symbolrates, bijvoorbeeld `150k`, `250k` en `333k`.
 
+## Praktijktests
+
+In praktijkproeven met BATC Portsdown 3 en Portsdown 4 zenders is `rbdvbt_rx`
+gebruikt met `150k`, `250k` en `333k` modes en FEC `1/2` en `2/3`. Tijdens
+tests met PA3BYV op `436 MHz` draaide de ontvanger op een laptop achter een
+Netstream uit Linrad DSP met Afedri hardware; daarbij zijn succesvolle decodes
+behaald op `150k` en `250k` met FEC `1/2`, ook tijdens een aircraft-scatter
+moment. De software is daarnaast getest op een ARM64 Odroid N2 systeem zoals
+gebruikt bij de PI6EHV WebSDR en ATV-repeater, en met een `2324 MHz` link naar
+de PI6EHV ATV-repeater zijn stabiele streams gerealiseerd voor `250k` en
+`333k` met FEC `2/3`.
+
 ![ffplay met ontvangen DVB-T transportstream](plots/screenshot_ffplay.png)
 
 ## Doel
