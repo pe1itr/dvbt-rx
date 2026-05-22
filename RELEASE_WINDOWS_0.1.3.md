@@ -45,21 +45,23 @@ In de zip zitten:
 
 - `rbdvbt_gui.exe`
 - `rbdvbt_rx.exe`
+- `rtl_sdr.exe`
+- `librtlsdr.dll`
+- `libusb-1.0.dll`
 - Qt runtime DLL's
 - FFTW runtime DLL
 - `README_WINDOWS_GUI.txt`
 - `README_PROJECT.md`
-- `ADD_RTLSDR_FILES_HERE.txt`
+- `RTLSDR_SOURCE.txt`
 
 Niet meegeleverd:
 
-- `rtl_sdr.exe`
-- `librtlsdr.dll` of `rtlsdr.dll`
-- `libusb-1.0.dll`
 - VLC
 
-Plaats de RTL-SDR bestanden naast `rbdvbt_gui.exe`, of stel de paden in via de
-GUI. VLC mag geinstalleerd zijn in de standaard VideoLAN map.
+De RTL-SDR binaries komen uit de 64-bit Osmocom Windows build
+`rtl-sdr-64bit-20260517.zip` van
+`https://downloads.osmocom.org/binaries/windows/rtl-sdr/`. VLC mag
+geinstalleerd zijn in de standaard VideoLAN map.
 
 ## Standaard live pipeline
 
@@ -98,7 +100,7 @@ rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --res
 - `stdout` blijft alleen MPEG-TS als `--stdout-ts` of `--ts-out -` wordt
   gebruikt. Diagnostiek gaat naar `stderr`.
 - UDP output verwacht een IPv4 doel, bijvoorbeeld `127.0.0.1:10000`.
-- De zip bevat geen `rtl_sdr.exe`, RTL-SDR DLL's of VLC.
+- De zip bevat geen VLC.
 
 ## Verificatie
 

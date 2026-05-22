@@ -50,6 +50,11 @@ libusb-1.0.dll
 README_WINDOWS_GUI.txt
 ```
 
+De release-zip kan deze RTL-SDR bestanden meeleveren wanneer ze lokaal staan in
+`dist/vendor/rtlsdr/`. Gebruik voor deze vendor-map de 64-bit Osmocom build,
+bijvoorbeeld `rtl-sdr-64bit-20260517.zip` van
+`https://downloads.osmocom.org/binaries/windows/rtl-sdr/`.
+
 Voeg daarnaast de Qt runtime DLL's toe. Gebruik bij een Qt installatie meestal:
 
 ```bat
@@ -101,7 +106,8 @@ bij `250k` en `333k` gebruikt de GUI `--live-symbols 64 --probe-symbols 64`.
 6. Klik `START` als je geen preset gebruikt.
 7. Klik `STOP` om VLC, decoder en RTL-SDR in die volgorde te stoppen.
 
-De video wordt in het hoofdvenster embedded via VLC `--drawable-hwnd`.
+De video wordt in het hoofdvenster embedded via VLC `--intf dummy` en
+`--drawable-hwnd`.
 Het statuspaneel toont live OFDM lock met kleur, SNR, frequentie-offset,
 carrier-bin shift, SDR level, IQ-niveau met RMS/piek/clipping, service name,
 provider name, input bytes en TS bytes uit de decoderstatus-JSON. `SDR level`

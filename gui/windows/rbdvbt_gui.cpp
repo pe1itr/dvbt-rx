@@ -566,9 +566,12 @@ private:
 
         auto *display = new QSplitter(Qt::Horizontal, central);
         videoWidget_ = new QWidget(display);
+        videoWidget_->setAttribute(Qt::WA_NativeWindow, true);
+        videoWidget_->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
         videoWidget_->setAutoFillBackground(true);
         videoWidget_->setMinimumHeight(300);
         videoWidget_->setStyleSheet("background: black;");
+        videoWidget_->winId();
         display->addWidget(videoWidget_);
 
         auto *visualTabs = new QTabWidget(display);
@@ -1025,7 +1028,8 @@ private:
                         "--loglevel", settings_.loglevel};
         vlcCommand_ = report.vlcPath;
         const quintptr hwnd = quintptr(videoWidget_->winId());
-        vlcArgs_ = {"--drawable-hwnd", QString::number(hwnd),
+        vlcArgs_ = {"--intf", "dummy", "--dummy-quiet",
+                    "--drawable-hwnd", QString::number(hwnd),
                     "--no-video-title-show", "--quiet", kUdpTsBindUrl};
 
         log("Diagnose", "Pipeline starten zonder shell; TS loopt via UDP naar VLC.");
