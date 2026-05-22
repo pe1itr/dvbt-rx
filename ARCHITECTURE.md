@@ -26,6 +26,43 @@ Belangrijke ontwerpregels:
 - De receiver is bewust smal: QPSK, DVB-T 2K, bekende reduced-bandwidth modes,
   sterke instrumentatie.
 
+## Backend-rol en grenzen
+
+`rbdvbt_rx` is bedoeld als een betrouwbare backend voor reduced-bandwidth DVB-T.
+Een externe UI of orchestrator mag deze binary starten, stoppen, monitoren en
+combineren met andere backends, maar die orchestration hoort niet in deze
+receiver zelf.
+
+Ontwerpimplicaties:
+
+- De procesinterface is onderdeel van het ontwerp: CLI-parameters, exitstatus,
+  schone TS-output, `stderr`-diagnostiek en machineleesbare status moeten stabiel
+  en scriptbaar blijven.
+- De receiver mag geen interactieve prompts, terminal-UI of shell-afhankelijke
+  bediening nodig hebben om de normale decodeflow te gebruiken.
+- High-speed DVB-T via RTL2832U hardware-demodulatie is een aparte backend of
+  apart project. Die route levert al MPEG-TS uit hardware en hoort niet in de
+  software-OFDM/FEC-keten van `rbdvbt_rx`.
+- DVB-S en DVB-S2 vallen buiten deze repo. Als ze later in dezelfde gebruikers-UI
+  komen, gebeurt dat via een aparte backend, bijvoorbeeld rond LeanDVB.
+- Nieuwe gedeelde functionaliteit moet alleen worden afgesplitst wanneer deze
+  deze backend sterker maakt, bijvoorbeeld TS-output, statusrapportage of
+  procesbesturing. Vermijd een generiek multi-standaard framework in deze repo.
+
+De optionele Windows GUI heeft een andere, beperkte rol. Die is bedoeld als
+praktische launcher voor Windows-gebruikers die willen helpen met testen maar
+niet belast moeten worden met batchscripts, shell-pijpen of losse commandline
+stappen. De GUI mag dus gebruiksgemak bieden rond `rtl_sdr`, `rbdvbt_rx`, VLC en
+diagnostiek, maar verandert niet de kernarchitectuur: de receiver blijft de
+scriptbare backend en de GUI blijft een ondersteunende gebruikerslaag.
+
+Diagnose-upload naar een webserver hoort ook bij deze Windows GUI-laag, niet bij
+de receiver. Een knop zoals `Verstuur diagnose` mag logbestanden, status JSON,
+versies en gekozen instellingen verzamelen en via een support-API opsturen. Zo'n
+upload moet altijd expliciet door de gebruiker worden gestart. Grote IQ-opnames
+of MPEG-TS bestanden horen daar niet standaard in; die mogen alleen worden
+meegenomen als de gebruiker dat apart kiest.
+
 ## Actieve binaries
 
 De actieve software zit in `src/`, `include/` en `tools/`.
@@ -413,6 +450,11 @@ Bij lock worden onder andere gevuld:
 - `ssi`
 - `sqi`
 - `snr`
+- `iq_rms_dbfs`
+- `iq_peak_dbfs`
+- `iq_headroom_db`
+- `iq_clip_count`
+- `iq_clip_percent`
 - `packets`
 - `rs_corrected`
 - `rs_uncorrectable`

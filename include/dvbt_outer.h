@@ -19,6 +19,12 @@ typedef struct {
     int32_t bin_shift;
     int32_t symbol_phase;
     uint64_t input_samples;
+    uint64_t iq_stats_samples;
+    double iq_rms_dbfs;
+    double iq_peak_dbfs;
+    double iq_headroom_db;
+    uint64_t iq_clip_count;
+    double iq_clip_percent;
     uint32_t lock_quality;
     uint32_t ssi;
     int wait_video_start;

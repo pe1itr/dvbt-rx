@@ -1526,6 +1526,12 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
     status->bin_shift = 0;
     status->symbol_phase = 0;
     status->input_samples = 0u;
+    status->iq_stats_samples = 0u;
+    status->iq_rms_dbfs = NAN;
+    status->iq_peak_dbfs = NAN;
+    status->iq_headroom_db = NAN;
+    status->iq_clip_count = 0u;
+    status->iq_clip_percent = NAN;
     status->lock_quality = 0u;
     status->ssi = 0u;
     status->wait_video_start = cfg->wait_video_start;
@@ -1550,6 +1556,29 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
             status->lock_quality = 100u;
         }
     }
+}
+
+static void status_apply_iq_stats(rbdvbt_status_context_t *status,
+                                  const rbdvbt_iq_stats_t *stats)
+{
+    double channel_rms;
+    double peak_abs;
+    uint64_t clip_count;
+
+    if (status == NULL || stats == NULL || stats->samples == 0u) {
+        return;
+    }
+
+    channel_rms = sqrt(stats->sum_power / ((double)stats->samples * 2.0));
+    peak_abs = stats->peak_abs_i > stats->peak_abs_q ? stats->peak_abs_i : stats->peak_abs_q;
+    clip_count = stats->clipped_i + stats->clipped_q;
+
+    status->iq_stats_samples = stats->samples;
+    status->iq_clip_count = clip_count;
+    status->iq_clip_percent = 100.0 * (double)clip_count / ((double)stats->samples * 2.0);
+    status->iq_rms_dbfs = channel_rms > 0.0 ? 20.0 * log10(channel_rms) : NAN;
+    status->iq_peak_dbfs = peak_abs > 0.0 ? 20.0 * log10(peak_abs) : NAN;
+    status->iq_headroom_db = isfinite(status->iq_peak_dbfs) ? -status->iq_peak_dbfs : NAN;
 }
 
 static int live_iq_ring_start(rbdvbt_input_format_t format,
@@ -1591,6 +1620,7 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
 
     rbdvbt_iq_stats_init(stats);
     init_status_context_from_config(cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+    status_apply_iq_stats(&status, stats);
     live_decode_status_snapshot(&status);
     rbdvbt_status_publish_idle(&status, "start", 0);
 
@@ -1651,12 +1681,14 @@ static int read_probe_samples(const rbdvbt_config_t *cfg,
         count += got;
 
         while (status_period_samples != 0u && (uint64_t)count >= next_status_samples) {
+            status_apply_iq_stats(&status, stats);
             live_decode_status_snapshot(&status);
             rbdvbt_status_publish_idle(&status, "input", (uint64_t)count);
             next_status_samples += status_period_samples;
         }
     }
 
+    status_apply_iq_stats(&status, stats);
     live_decode_status_snapshot(&status);
     rbdvbt_status_publish_idle(&status, "input-done", (uint64_t)count);
     *out_samples = samples;
@@ -7675,7 +7707,8 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
                                            uint32_t start,
                                            uint32_t gi_len,
                                            uint32_t symbol_len,
-                                           double cfo_hz)
+                                           double cfo_hz,
+                                           const rbdvbt_iq_stats_t *iq_stats)
 {
     fftwf_complex *fft_in = NULL;
     fftwf_complex *fft_out = NULL;
@@ -8404,6 +8437,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         status.afc_delta_bins = afc_delta_bins;
         status.afc_trend_count = afc_trend_count;
         status.gui_enabled = cfg->gui;
+        status_apply_iq_stats(&status, iq_stats);
         live_decode_status_snapshot(&status);
 
         if (cfg->gui && (!cfg->live_mode ||
@@ -9011,6 +9045,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     }
 
     init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+    status_apply_iq_stats(&status, &stats);
     live_decode_status_snapshot(&status);
     rbdvbt_status_publish_idle(&status, "processing", (uint64_t)count);
     if (rbdvbt_log_enabled(RBDVBT_LOG_DEBUG)) {
@@ -9044,6 +9079,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                     count);
         }
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+        status_apply_iq_stats(&status, &stats);
         live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "resample", (uint64_t)stats.samples);
     }
@@ -9091,6 +9127,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
                     count);
         }
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+        status_apply_iq_stats(&status, &stats);
         live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "resample", (uint64_t)stats.samples);
     }
@@ -9101,6 +9138,7 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
         gi_len = guard_samples(fft_size, effective_cfg.guard_interval);
         symbol_len = fft_size + gi_len;
         init_status_context_from_config(&effective_cfg, &status, status_symbol_rate, sizeof(status_symbol_rate));
+        status_apply_iq_stats(&status, &stats);
         live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "auto-gi", (uint64_t)stats.samples);
     } else if (gi_len == 0 || symbol_len <= fft_size) {
@@ -9310,10 +9348,12 @@ int rbdvbt_run_constellation_probe(const rbdvbt_config_t *cfg)
     }
 
     if (fft_size == RBDVBT_DVBT_2K_FFT_SIZE) {
+        status_apply_iq_stats(&status, &stats);
         live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "demod", (uint64_t)stats.samples);
-        rc = write_dvbt2k_qpsk_constellation(&effective_cfg, samples, count, start, gi_len, symbol_len, cfo_hz);
+        rc = write_dvbt2k_qpsk_constellation(&effective_cfg, samples, count, start, gi_len, symbol_len, cfo_hz, &stats);
     } else {
+        status_apply_iq_stats(&status, &stats);
         live_decode_status_snapshot(&status);
         rbdvbt_status_publish_idle(&status, "demod", (uint64_t)stats.samples);
         rc = write_constellation(&effective_cfg, samples, count, start, fft_size, gi_len, symbol_len, cfo_hz);

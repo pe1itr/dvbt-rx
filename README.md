@@ -44,6 +44,10 @@ Belangrijke ontwerpkeuzes:
   geen onderdeel van de lock-keten.
 - De status kan periodiek als JSON worden geschreven voor monitoring in een
   tweede terminal.
+- Het programma is ontworpen als backend die later door een aparte UI of
+  orchestrator kan worden gestart en bewaakt. High-speed DVB-T hardwaredecode en
+  DVB-S/S2 horen daarbij in aparte backends, niet in deze reduced-bandwidth
+  softwaredecoder.
 
 ## Installatie
 
@@ -93,6 +97,14 @@ Op Windows kan optioneel `rbdvbt_gui.exe` worden gebouwd. Dit is een Qt 6
 launcher die `rtl_sdr.exe`, `rbdvbt_rx.exe` en VLC direct start, de IQ- en
 transportstream-pijpen zonder shell verbindt, VLC in het hoofdvenster embedded
 toont en diagnose-informatie naar het clipboard kan kopieren.
+
+De Windows GUI is in dit project een ondersteunende launcher, geen algemene
+orchestrator. Het doel is Windows-gebruikers en meewerkende zendamateurs een
+eenvoudige testomgeving te geven zonder batchscripts of commandline-pijpen,
+zodat zij makkelijker praktijksignalen kunnen testen en feedback kunnen geven.
+Een eventuele knop om diagnosegegevens naar een support-API te sturen hoort bij
+deze GUI-laag. Zo'n upload moet handmatig door de gebruiker worden gestart en
+standaard beperkt blijven tot logs, status JSON, versies en instellingen.
 
 De GUI target bestaat alleen onder `WIN32` en verandert de normale Linux build
 van `rbdvbt_rx` niet. Zie `README_WINDOWS_GUI.txt` voor build-, packaging- en

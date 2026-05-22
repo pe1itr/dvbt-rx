@@ -2846,6 +2846,28 @@ static void status_write_json(const rbdvbt_status_context_t *status,
     fprintf(f, "  \"guard\": \"%s\",\n", status->guard_interval != NULL ? status->guard_interval : "unknown");
     fprintf(f, "  \"locked\": %s,\n", locked ? "true" : "false");
     fprintf(f, "  \"lock_quality\": %u,\n", lock_quality);
+    fprintf(f, "  \"iq_stats_samples\": %llu,\n", (unsigned long long)status->iq_stats_samples);
+    if (isfinite(status->iq_rms_dbfs)) {
+        fprintf(f, "  \"iq_rms_dbfs\": %.2f,\n", status->iq_rms_dbfs);
+    } else {
+        fprintf(f, "  \"iq_rms_dbfs\": null,\n");
+    }
+    if (isfinite(status->iq_peak_dbfs)) {
+        fprintf(f, "  \"iq_peak_dbfs\": %.2f,\n", status->iq_peak_dbfs);
+    } else {
+        fprintf(f, "  \"iq_peak_dbfs\": null,\n");
+    }
+    if (isfinite(status->iq_headroom_db)) {
+        fprintf(f, "  \"iq_headroom_db\": %.2f,\n", status->iq_headroom_db);
+    } else {
+        fprintf(f, "  \"iq_headroom_db\": null,\n");
+    }
+    fprintf(f, "  \"iq_clip_count\": %llu,\n", (unsigned long long)status->iq_clip_count);
+    if (isfinite(status->iq_clip_percent)) {
+        fprintf(f, "  \"iq_clip_percent\": %.6f,\n", status->iq_clip_percent);
+    } else {
+        fprintf(f, "  \"iq_clip_percent\": null,\n");
+    }
     if (isfinite(status->pilot_lock)) {
         fprintf(f, "  \"pilot_lock\": %.5f,\n", status->pilot_lock);
     } else {

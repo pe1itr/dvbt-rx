@@ -21,6 +21,8 @@
 #include <QtGui/QGuiApplication>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
+#include <QtGui/QAction>
+#include <QtGui/QActionGroup>
 #include <QtNetwork/QHostAddress>
 #include <QtNetwork/QUdpSocket>
 #include <QtWidgets/QApplication>
@@ -49,6 +51,7 @@
 
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 
 namespace {
 
@@ -165,6 +168,39 @@ QStringList splitLines(const QByteArray &data)
     if (!lines.isEmpty() && lines.last().isEmpty())
         lines.removeLast();
     return lines;
+}
+
+QString normalizeSymbolRate(const QString &value)
+{
+    const QString v = value.trimmed().toLower();
+    if (v == "150000" || v == "150k")
+        return "150k";
+    if (v == "250000" || v == "250k")
+        return "250k";
+    if (v == "333000" || v == "333333" || v == "333k")
+        return "333k";
+    return "250k";
+}
+
+QString normalizeGuard(const QString &value)
+{
+    const QString v = value.trimmed().toLower();
+    if (v == "auto" || v == "1/32")
+        return v;
+    return "auto";
+}
+
+QString normalizeFec(const QString &value)
+{
+    const QString v = value.trimmed().toLower();
+    if (v == "auto" || v == "1/2" || v == "2/3")
+        return v;
+    return "auto";
+}
+
+QString frontendSymbolsForRate(const QString &symbolRate)
+{
+    return normalizeSymbolRate(symbolRate) == "150k" ? "128" : "64";
 }
 
 struct DependencyReport {
@@ -284,13 +320,25 @@ protected:
         p.fillRect(rect(), Qt::black);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        const QRect plot = rect().adjusted(46, 24, -12, -32);
+        const QRect plot = rect().adjusted(58, 24, -12, -32);
         p.setPen(QColor(55, 55, 55));
         p.drawRect(plot);
-        for (int i = 1; i < 4; ++i) {
-            const int y = plot.top() + plot.height() * i / 4;
+        const float plotMin = 0.0f;
+        const float plotMax = 40.0f;
+        for (int db = 0; db <= 40; db += 10) {
+            const int y = yForRelativeDb(plot, (float)db, plotMin, plotMax);
+            p.setPen(QColor(55, 55, 55));
             p.drawLine(plot.left(), y, plot.right(), y);
+            p.setPen(QColor(165, 165, 165));
+            p.drawText(8, y + 4, db == 0 ? "0 dB" : QString("+%1 dB").arg(db));
         }
+        const int detectY = yForRelativeDb(plot, 7.0f, plotMin, plotMax);
+        QPen detectPen(QColor(230, 210, 80, 130), 1.0, Qt::DashLine);
+        p.setPen(detectPen);
+        p.drawLine(plot.left(), detectY, plot.right(), detectY);
+        p.setPen(QColor(230, 210, 80, 170));
+        p.drawText(plot.left() + 6, detectY - 4, "+7 dB");
+        p.setPen(QColor(55, 55, 55));
         p.drawLine(plot.center().x(), plot.top(), plot.center().x(), plot.bottom());
 
         if (values_.isEmpty()) {
@@ -299,24 +347,17 @@ protected:
             return;
         }
 
-        float minDb = values_.first();
-        float maxDb = values_.first();
+        const float noiseFloorDb = estimateNoiseFloorDb(values_);
+        float maxRelativeDb = 0.0f;
         for (float v : values_) {
-            minDb = qMin(minDb, v);
-            maxDb = qMax(maxDb, v);
+            maxRelativeDb = qMax(maxRelativeDb, v - noiseFloorDb);
         }
-        float plotMax = std::ceil((maxDb + 3.0f) / 10.0f) * 10.0f;
-        float plotMin = plotMax - 70.0f;
-        if (minDb < plotMin)
-            plotMin = std::floor(minDb / 10.0f) * 10.0f;
-        if (plotMax <= plotMin + 1.0f)
-            plotMax = plotMin + 1.0f;
 
         QPainterPath path;
         for (int x = 0; x < plot.width(); ++x) {
             const int idx = qBound(0, x * values_.size() / qMax(1, plot.width()), values_.size() - 1);
-            const float v = qBound(plotMin, values_[idx], plotMax);
-            const double fy = plot.top() + double(plot.height()) * double(plotMax - v) / double(plotMax - plotMin);
+            const float v = qBound(plotMin, values_[idx] - noiseFloorDb, plotMax);
+            const double fy = yForRelativeDb(plot, v, plotMin, plotMax);
             const QPointF pt(plot.left() + x, fy);
             if (x == 0)
                 path.moveTo(pt);
@@ -327,8 +368,8 @@ protected:
         p.drawPath(path);
 
         p.setPen(QColor(230, 210, 80));
-        p.drawText(10, 18, QString("Input IQ spectrum  span=%1 Hz  range=%2..%3 dB")
-            .arg(sampleRate_).arg(plotMin, 0, 'f', 0).arg(plotMax, 0, 'f', 0));
+        p.drawText(10, 18, QString("Input IQ spectrum  span=%1 Hz  noise=0 dB  peak=+%2 dB")
+            .arg(sampleRate_).arg(maxRelativeDb, 0, 'f', 1));
         const double mhz = double(sampleRate_) / 1000000.0;
         p.drawText(plot.left(), height() - 10, QString("-%1 MHz").arg(mhz / 2.0, 0, 'g', 3));
         p.drawText(plot.center().x() - 4, height() - 10, "0");
@@ -336,6 +377,22 @@ protected:
     }
 
 private:
+    static int yForRelativeDb(const QRect &plot, float db, float plotMin, float plotMax)
+    {
+        return plot.top() + int(double(plot.height()) * double(plotMax - db) / double(plotMax - plotMin) + 0.5);
+    }
+
+    static float estimateNoiseFloorDb(const QVector<float> &values)
+    {
+        QVector<float> sorted = values;
+        std::sort(sorted.begin(), sorted.end());
+        const int count = qMax(1, sorted.size() / 5);
+        double sum = 0.0;
+        for (int i = 0; i < count; ++i)
+            sum += sorted[i];
+        return float(sum / double(count));
+    }
+
     QVector<float> values_;
     quint32 sampleRate_ = 0;
 };
@@ -377,10 +434,8 @@ protected:
             return;
         }
 
-        double scale = 1.5;
-        for (const QPointF &pt : points_)
-            scale = qMax(scale, qMax(qAbs(pt.x()), qAbs(pt.y())) * 1.2);
-        const double pixels = double(square.width()) / (2.0 * scale);
+        const double scale = 1.6;
+        const double pixels = double(square.width()) * 0.43 / scale;
 
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(255, 210, 60, 175));
@@ -443,15 +498,15 @@ private:
                                "C:/Program Files/VideoLAN/VLC/vlc.exe",
                                "C:/Program Files (x86)/VideoLAN/VLC/vlc.exe"})).toString();
         settings_.dlls = settingsStore_->value("paths/dlls", QStringList({"librtlsdr.dll", "libusb-1.0.dll"})).toStringList();
-        settings_.inputMode = settingsStore_->value("input/mode", settings_.inputMode).toString();
+        settings_.inputMode = "rtl";
         settings_.iqPath = settingsStore_->value("input/iqPath", settings_.iqPath).toString();
         settings_.inputFormat = settingsStore_->value("input/format", settings_.inputFormat).toString();
         settings_.frequency = settingsStore_->value("rx/frequency", settings_.frequency).toString();
         settings_.rtlSampleRate = settingsStore_->value("rx/rtlSampleRate", settings_.rtlSampleRate).toString();
         settings_.gain = settingsStore_->value("rx/gain", settings_.gain).toString();
-        settings_.symbolRate = settingsStore_->value("rx/symbolRate", settings_.symbolRate).toString();
-        settings_.guard = settingsStore_->value("rx/guard", settings_.guard).toString();
-        settings_.fec = settingsStore_->value("rx/fec", settings_.fec).toString();
+        settings_.symbolRate = normalizeSymbolRate(settingsStore_->value("rx/symbolRate", settings_.symbolRate).toString());
+        settings_.guard = normalizeGuard(settingsStore_->value("rx/guard", settings_.guard).toString());
+        settings_.fec = normalizeFec(settingsStore_->value("rx/fec", settings_.fec).toString());
         settings_.loglevel = settingsStore_->value("rx/loglevel", settings_.loglevel).toString();
         restoreGeometry(settingsStore_->value("window/geometry").toByteArray());
     }
@@ -463,7 +518,6 @@ private:
         settingsStore_->setValue("paths/decoder", settings_.decoderPath);
         settingsStore_->setValue("paths/vlc", settings_.vlcPath);
         settingsStore_->setValue("paths/dlls", settings_.dlls);
-        settingsStore_->setValue("input/mode", settings_.inputMode);
         settingsStore_->setValue("input/iqPath", settings_.iqPath);
         settingsStore_->setValue("input/format", settings_.inputFormat);
         settingsStore_->setValue("rx/frequency", settings_.frequency);
@@ -480,8 +534,25 @@ private:
     void buildUi()
     {
         auto *fileMenu = menuBar()->addMenu("Bestand");
-        auto *openAction = fileMenu->addAction("Open IQ bestand...");
-        connect(openAction, &QAction::triggered, this, &MainWindow::openIqFile);
+        auto *openU8Action = fileMenu->addAction("Open IQ u8 bestand...");
+        auto *openS16Action = fileMenu->addAction("Open IQ s16 bestand...");
+        connect(openU8Action, &QAction::triggered, this, [this]() { openIqFile("u8"); });
+        connect(openS16Action, &QAction::triggered, this, [this]() { openIqFile("s16"); });
+        fileMenu->addSeparator();
+        auto *quitAction = fileMenu->addAction("Quit");
+        connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
+
+        auto *configMenu = menuBar()->addMenu("Configuratie");
+        auto *configAction = configMenu->addAction("Configuratie...");
+        auto *checkAction = configMenu->addAction("Check installatie");
+        connect(configAction, &QAction::triggered, this, &MainWindow::openConfig);
+        connect(checkAction, &QAction::triggered, this, &MainWindow::checkInstallation);
+
+        buildLoggingMenu();
+
+        auto *helpMenu = menuBar()->addMenu("Help");
+        auto *infoAction = helpMenu->addAction("Info");
+        connect(infoAction, &QAction::triggered, this, &MainWindow::showInfo);
 
         auto *central = new QWidget(this);
         auto *root = new QVBoxLayout(central);
@@ -505,6 +576,7 @@ private:
         constellationWidget_ = new ConstellationWidget(visualTabs);
         visualTabs->addTab(spectrumWidget_, "Spectrum");
         visualTabs->addTab(constellationWidget_, "Constellatie");
+        visualTabs->addTab(buildProcessTab(visualTabs), "Processen");
         display->addWidget(visualTabs);
         display->setStretchFactor(0, 3);
         display->setStretchFactor(1, 2);
@@ -527,40 +599,39 @@ private:
         resize(1120, 780);
     }
 
+    void buildLoggingMenu()
+    {
+        auto *loggingMenu = menuBar()->addMenu("Logging");
+        auto *levelGroup = new QActionGroup(loggingMenu);
+        levelGroup->setExclusive(true);
+        const QStringList levels = {"quiet", "error", "warn", "info", "debug", "trace"};
+        for (const QString &level : levels) {
+            auto *action = loggingMenu->addAction(level);
+            action->setCheckable(true);
+            action->setData(level);
+            levelGroup->addAction(action);
+            if (level == settings_.loglevel)
+                action->setChecked(true);
+            connect(action, &QAction::triggered, this, [this, level]() { setLoglevel(level); });
+        }
+        loggingMenu->addSeparator();
+        auto *copyDecoderLogAction = loggingMenu->addAction("Kopieer decoder logging");
+        connect(copyDecoderLogAction, &QAction::triggered, this, &MainWindow::copyDecoderLogging);
+    }
+
     QWidget *buildRxBox()
     {
         auto *box = new QGroupBox("Ontvangstinstellingen", this);
         auto *layout = new QGridLayout(box);
-        inputModeCombo_ = addCombo(layout, "Input", {"RTL-SDR live", "IQ bestand"}, settings_.inputMode == "file" ? "IQ bestand" : "RTL-SDR live", 0);
-        inputFormatCombo_ = addCombo(layout, "IQ formaat", {"u8", "s16"}, settings_.inputFormat, 1);
-        frequencyEdit_ = addLine(layout, "Frequentie Hz", settings_.frequency, 2);
-        rtlRateEdit_ = addLine(layout, "Sample rate", settings_.rtlSampleRate, 3);
-        gainEdit_ = addLine(layout, "RTL gain", settings_.gain, 4);
-        iqPathEdit_ = addFileLine(layout, "IQ bestand", settings_.iqPath, 5);
-        symbolRateEdit_ = addLine(layout, "DVB-T symbol rate", settings_.symbolRate, 6);
-        guardCombo_ = addCombo(layout, "Guard interval", {"1/32", "1/16", "1/8", "auto"}, settings_.guard, 7);
-        fecCombo_ = addCombo(layout, "FEC", {"1/2", "2/3", "3/4", "5/6", "7/8", "auto"}, settings_.fec, 8);
-        loglevelCombo_ = addCombo(layout, "Decoder loglevel", {"quiet", "error", "warn", "info", "debug", "trace"}, settings_.loglevel, 9);
+        inputDeviceCombo_ = addCombo(layout, "Input", {"RTL-SDR"}, "RTL-SDR", 0);
+        inputDeviceCombo_->setEnabled(false);
+        frequencyEdit_ = addLine(layout, "Frequentie Hz", settings_.frequency, 1);
+        rtlRateEdit_ = addLine(layout, "Sample rate", settings_.rtlSampleRate, 2);
+        gainEdit_ = addLine(layout, "Gain", settings_.gain, 3);
+        symbolRateCombo_ = addCombo(layout, "DVB-T symbol rate", {"150k", "250k", "333k"}, settings_.symbolRate, 4);
+        guardCombo_ = addCombo(layout, "Guard interval", {"auto", "1/32"}, settings_.guard, 5);
+        fecCombo_ = addCombo(layout, "FEC", {"auto", "1/2", "2/3"}, settings_.fec, 6);
 
-        startButton_ = new QPushButton("START", box);
-        stopButton_ = new QPushButton("STOP", box);
-        auto *checkButton = new QPushButton("Check installatie", box);
-        auto *copyButton = new QPushButton("Kopieer diagnose", box);
-        auto *configButton = new QPushButton("Configuratie", box);
-        layout->addWidget(startButton_, 10, 0);
-        layout->addWidget(stopButton_, 10, 1);
-        layout->addWidget(checkButton, 11, 0);
-        layout->addWidget(copyButton, 11, 1);
-        layout->addWidget(configButton, 11, 2);
-        stopButton_->setEnabled(false);
-        connect(inputModeCombo_, &QComboBox::currentTextChanged, this, &MainWindow::updateInputUi);
-        updateInputUi();
-
-        connect(startButton_, &QPushButton::clicked, this, &MainWindow::startPipeline);
-        connect(stopButton_, &QPushButton::clicked, this, &MainWindow::stopPipeline);
-        connect(checkButton, &QPushButton::clicked, this, &MainWindow::checkInstallation);
-        connect(copyButton, &QPushButton::clicked, this, &MainWindow::copyDiagnosis);
-        connect(configButton, &QPushButton::clicked, this, &MainWindow::openConfig);
         return box;
     }
 
@@ -569,9 +640,80 @@ private:
         auto *box = new QGroupBox("Status", this);
         auto *layout = new QVBoxLayout(box);
         signalLabel_ = new QLabel(box);
+        signalLabel_->setTextFormat(Qt::RichText);
         signalLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
         layout->addWidget(signalLabel_);
-        statusTable_ = new QTableWidget(4, 5, box);
+        countersLabel_ = new QLabel(box);
+        countersLabel_->setTextFormat(Qt::RichText);
+        countersLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(countersLabel_);
+        layout->addSpacing(8);
+
+        auto *runLayout = new QHBoxLayout();
+        startButton_ = new QPushButton("START", box);
+        stopButton_ = new QPushButton("STOP", box);
+        stopButton_->setEnabled(false);
+        runLayout->addWidget(startButton_);
+        runLayout->addWidget(stopButton_);
+        layout->addLayout(runLayout);
+
+        auto *presetGrid = new QGridLayout();
+        addPresetButton(presetGrid, "436 MHz 150k FEC 1/2", "436000000", "150k", "1/2", 0, 0);
+        addPresetButton(presetGrid, "436 MHz 250k FEC 1/2", "436000000", "250k", "1/2", 0, 1);
+        addPresetButton(presetGrid, "437 MHz 150k FEC 1/2", "437000000", "150k", "1/2", 1, 0);
+        addPresetButton(presetGrid, "437 MHz 250k FEC 1/2", "437000000", "250k", "1/2", 1, 1);
+        layout->addLayout(presetGrid);
+
+        connect(startButton_, &QPushButton::clicked, this, &MainWindow::startPipeline);
+        connect(stopButton_, &QPushButton::clicked, this, &MainWindow::stopPipeline);
+        layout->addStretch(1);
+        return box;
+    }
+
+    void addPresetButton(QGridLayout *layout,
+                         const QString &label,
+                         const QString &frequency,
+                         const QString &symbolRate,
+                         const QString &fec,
+                         int row,
+                         int col)
+    {
+        auto *button = new QPushButton(label, this);
+        layout->addWidget(button, row, col);
+        connect(button, &QPushButton::clicked, this, [this, frequency, symbolRate, fec]() {
+            applyPreset(frequency, symbolRate, fec);
+        });
+    }
+
+    void applyPreset(const QString &frequency, const QString &symbolRate, const QString &fec)
+    {
+        const bool wasRunning = rtlProcess_ || decoderProcess_ || vlcProcess_;
+
+        if (wasRunning)
+            stopPipeline();
+        if (frequencyEdit_)
+            frequencyEdit_->setText(frequency);
+        if (symbolRateCombo_) {
+            const int idx = symbolRateCombo_->findText(symbolRate);
+            if (idx >= 0)
+                symbolRateCombo_->setCurrentIndex(idx);
+        }
+        if (fecCombo_) {
+            const int idx = fecCombo_->findText(fec);
+            if (idx >= 0)
+                fecCombo_->setCurrentIndex(idx);
+        }
+        saveSettings();
+        log("Diagnose", QString("Preset ingesteld: frequentie=%1 symbol_rate=%2 fec=%3")
+            .arg(frequency, symbolRate, fec));
+        startPipeline();
+    }
+
+    QWidget *buildProcessTab(QWidget *parent)
+    {
+        auto *tab = new QWidget(parent);
+        auto *layout = new QVBoxLayout(tab);
+        statusTable_ = new QTableWidget(4, 5, tab);
         statusTable_->setHorizontalHeaderLabels({"Proces", "Status", "PID", "Exit", "Laatste fout"});
         statusTable_->verticalHeader()->hide();
         statusTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -579,10 +721,7 @@ private:
         for (int i = 0; i < names.size(); ++i)
             statusTable_->setItem(i, 0, new QTableWidgetItem(names[i]));
         layout->addWidget(statusTable_);
-        countersLabel_ = new QLabel(box);
-        countersLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        layout->addWidget(countersLabel_);
-        return box;
+        return tab;
     }
 
     QLineEdit *addLine(QGridLayout *layout, const QString &label, const QString &value, int row)
@@ -604,7 +743,7 @@ private:
         rowLayout->addWidget(browse);
         layout->addWidget(new QLabel(label, this), row, 0);
         layout->addWidget(rowWidget, row, 1, 1, 2);
-        connect(browse, &QPushButton::clicked, this, &MainWindow::openIqFile);
+        connect(browse, &QPushButton::clicked, this, [this]() { openIqFile("u8"); });
         return edit;
     }
 
@@ -632,16 +771,14 @@ private:
     {
         if (!frequencyEdit_)
             return;
-        settings_.inputMode = inputModeCombo_->currentText() == "IQ bestand" ? "file" : "rtl";
-        settings_.inputFormat = inputFormatCombo_->currentText();
-        settings_.iqPath = cleanPath(iqPathEdit_->text());
         settings_.frequency = frequencyEdit_->text().trimmed();
         settings_.rtlSampleRate = rtlRateEdit_->text().trimmed();
         settings_.gain = gainEdit_->text().trimmed();
-        settings_.symbolRate = symbolRateEdit_->text().trimmed();
+        settings_.symbolRate = symbolRateCombo_->currentText();
         settings_.guard = guardCombo_->currentText();
         settings_.fec = fecCombo_->currentText();
-        settings_.loglevel = loglevelCombo_->currentText();
+        if (loglevelCombo_)
+            settings_.loglevel = loglevelCombo_->currentText();
     }
 
     QString resolveConfiguredExe(const QString &configured, const QString &name, const QStringList &extra = {}) const
@@ -754,26 +891,52 @@ private:
         }
     }
 
-    void openIqFile()
+    void setLoglevel(const QString &level)
     {
-        const QString current = iqPathEdit_ && !iqPathEdit_->text().isEmpty() ? QFileInfo(iqPathEdit_->text()).absolutePath() : appDir();
-        const QString path = QFileDialog::getOpenFileName(this, "Open IQ bestand", current, "IQ bestanden (*.iq *.bin *.raw);;Alle bestanden (*.*)");
-        if (path.isEmpty())
-            return;
-        iqPathEdit_->setText(cleanPath(path));
-        inputModeCombo_->setCurrentText("IQ bestand");
+        settings_.loglevel = level;
+        if (loglevelCombo_) {
+            const int idx = loglevelCombo_->findText(level);
+            if (idx >= 0)
+                loglevelCombo_->setCurrentIndex(idx);
+        }
         saveSettings();
-        log("Diagnose", QString("IQ bestand gekozen: %1").arg(cleanPath(path)));
+        log("Diagnose", QString("Decoder loglevel ingesteld op %1.").arg(level));
     }
 
-    void updateInputUi()
+    void showInfo()
     {
-        if (!inputModeCombo_)
+        QDialog dialog(this);
+        dialog.setWindowTitle("Info");
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *label = new QLabel(QString("rbdvbt_rx Windows GUI<br>"
+                                          "Versie %1<br>"
+                                          "by Rob Hardenberg PE1ITR<br><br>"
+                                          "<a href=\"https://github.com/rob-hardenberg/dvbt-rx\">GitHub repository</a>")
+                                     .arg(kBuildVersion),
+                                 &dialog);
+        label->setTextFormat(Qt::RichText);
+        label->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        label->setOpenExternalLinks(true);
+        layout->addWidget(label);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        layout->addWidget(buttons);
+        dialog.exec();
+    }
+
+    void openIqFile(const QString &format)
+    {
+        readSettingsFromUi();
+        const QString current = !settings_.iqPath.isEmpty() ? QFileInfo(settings_.iqPath).absolutePath() : appDir();
+        const QString title = QString("Open IQ %1 bestand").arg(format);
+        const QString path = QFileDialog::getOpenFileName(this, title, current, "IQ bestanden (*.iq *.bin *.raw);;Alle bestanden (*.*)");
+        if (path.isEmpty())
             return;
-        const bool fileMode = inputModeCombo_->currentText() == "IQ bestand";
-        frequencyEdit_->setEnabled(!fileMode);
-        gainEdit_->setEnabled(!fileMode);
-        iqPathEdit_->setEnabled(fileMode);
+        settings_.iqPath = cleanPath(path);
+        settings_.inputFormat = format;
+        settings_.inputMode = "file";
+        saveSettings();
+        log("Diagnose", QString("IQ %1 bestand gekozen: %2").arg(format, settings_.iqPath));
     }
 
     void startPipeline()
@@ -788,7 +951,7 @@ private:
             if (settings_.inputMode != "file" && !isUsableExe(report.rtlPath))
                 message += "rtl_sdr.exe niet gevonden. Controleer het pad in Configuratie.\n";
             if (settings_.inputMode == "file" && !QFileInfo(settings_.iqPath).isFile())
-                message += "IQ bestand niet gevonden. Kies een geldig bestand via Bestand > Open IQ bestand.\n";
+                message += "IQ bestand niet gevonden. Kies een geldig bestand via Bestand > Open IQ u8 bestand of Open IQ s16 bestand.\n";
             if (!isUsableExe(report.decoderPath))
                 message += "rbdvbt_rx.exe niet gevonden. Plaats deze naast de GUI of stel het pad in.\n";
             if (!isUsableExe(report.vlcPath))
@@ -851,9 +1014,11 @@ private:
         rtlArgs_ = settings_.inputMode == "file" ? QStringList({settings_.iqPath}) :
             QStringList({"-f", settings_.frequency, "-s", settings_.rtlSampleRate, "-g", settings_.gain, "-"});
         decoderCommand_ = report.decoderPath;
+        const QString frontendSymbols = frontendSymbolsForRate(settings_.symbolRate);
         decoderArgs_ = {"--stdin", "--live", "--resample-to-dvbt-rate",
                         "--input-format", settings_.inputFormat, "--sample-rate", settings_.rtlSampleRate,
                         "--sr", settings_.symbolRate, "--gi", settings_.guard, "--fec", settings_.fec,
+                        "--live-symbols", frontendSymbols, "--probe-symbols", frontendSymbols,
                         "--udp-out", kUdpTsOut, "--wait-video-start",
                         "--status-json", decoderStatusJsonPath_,
                         "--visualizer-udp", kVisualizerUdpOut,
@@ -928,6 +1093,8 @@ private:
         deleteLaterAndClear(vlcProcess_);
         deleteLaterAndClear(decoderProcess_);
         deleteLaterAndClear(rtlProcess_);
+        if (settings_.inputMode == "file")
+            settings_.inputMode = "rtl";
         startButton_->setEnabled(true);
         stopButton_->setEnabled(false);
         updateStatus();
@@ -1097,26 +1264,10 @@ private:
     {
         for (const QString &line : splitLines(process->readAllStandardError())) {
             appendTail(tail, line, 40);
-            if (source == "Decoder") {
-                noteDecoderTsProgress(line);
+            if (source == "Decoder")
                 noteDecoderSignalStatus(line);
-            }
             log(source, line);
         }
-    }
-
-    void noteDecoderTsProgress(const QString &line)
-    {
-        static const QRegularExpression re("written_packets=(\\d+)");
-        const QRegularExpressionMatch match = re.match(line);
-        if (!match.hasMatch())
-            return;
-        bool ok = false;
-        const qint64 packets = match.captured(1).toLongLong(&ok);
-        if (!ok || packets <= 0)
-            return;
-        tsBytes_ += packets * 188;
-        lastTsData_ = QDateTime::currentDateTime();
     }
 
     void noteDecoderSignalStatus(const QString &line)
@@ -1200,6 +1351,42 @@ private:
         if (snrOk)
             lastSnrText_ = QString::number(snr, 'f', 2) + " dB";
 
+        bool cfoOk = false;
+        const double cfo = jsonNumber(obj, "cfo_hz", &cfoOk);
+        if (cfoOk)
+            lastCfoText_ = QString::number(cfo, 'f', 1) + " Hz";
+
+        bool binShiftOk = false;
+        const double binShift = jsonNumber(obj, "bin_shift", &binShiftOk);
+        if (binShiftOk)
+            lastBinShiftText_ = QString::number((int)binShift);
+
+        bool iqRmsOk = false;
+        const double iqRms = jsonNumber(obj, "iq_rms_dbfs", &iqRmsOk);
+        bool iqPeakOk = false;
+        const double iqPeak = jsonNumber(obj, "iq_peak_dbfs", &iqPeakOk);
+        bool iqClipOk = false;
+        const double iqClip = jsonNumber(obj, "iq_clip_percent", &iqClipOk);
+        if (iqRmsOk || iqPeakOk || iqClipOk) {
+            QString sdrStatus = "OK";
+            QString sdrColor = "#188038";
+
+            if ((iqClipOk && iqClip > 0.0) || (iqPeakOk && iqPeak > -1.0)) {
+                sdrStatus = "CLIPPING";
+                sdrColor = "#b3261e";
+            } else if (iqRmsOk && iqRms < -35.0) {
+                sdrStatus = "LOW";
+                sdrColor = "#b3261e";
+            }
+
+            lastSdrLevelText_ = QString("<span style=\"color: white; background-color: %1; padding: 2px 7px;\">%2</span>")
+                .arg(sdrColor, sdrStatus);
+            lastIqLevelText_ = QString("rms %1  piek %2  clip %3")
+                .arg(iqRmsOk ? QString::number(iqRms, 'f', 1) + " dBFS" : "-")
+                .arg(iqPeakOk ? QString::number(iqPeak, 'f', 1) + " dBFS" : "-")
+                .arg(iqClipOk ? QString::number(iqClip, 'f', 4) + "%" : "-");
+        }
+
         const QString service = jsonString(obj, "service_name");
         const QString provider = jsonString(obj, "service_provider");
         if (!service.isEmpty())
@@ -1207,13 +1394,20 @@ private:
         if (!provider.isEmpty())
             lastProviderName_ = provider;
 
-        bool writtenOk = false;
-        const double writtenPackets = jsonNumber(obj, "written_packets", &writtenOk);
-        if (writtenOk && writtenPackets > 0.0) {
-            const qint64 jsonTsBytes = (qint64)writtenPackets * 188;
-            if (jsonTsBytes > tsBytes_)
-                tsBytes_ = jsonTsBytes;
+        bool sessionWrittenOk = false;
+        const double sessionWrittenPackets = jsonNumber(obj, "ts_session_written_packets", &sessionWrittenOk);
+        if (sessionWrittenOk && sessionWrittenPackets >= 0.0) {
+            tsBytes_ = (qint64)sessionWrittenPackets * 188;
             lastTsData_ = QDateTime::currentDateTime();
+        } else {
+            bool writtenOk = false;
+            const double writtenPackets = jsonNumber(obj, "written_packets", &writtenOk);
+            if (writtenOk && writtenPackets > 0.0) {
+                const qint64 jsonTsBytes = (qint64)writtenPackets * 188;
+                if (jsonTsBytes > tsBytes_)
+                    tsBytes_ = jsonTsBytes;
+                lastTsData_ = QDateTime::currentDateTime();
+            }
         }
     }
 
@@ -1249,18 +1443,30 @@ private:
         fillProcessRow(2, "TS output", decoderProcess_, tsBytes_ > 0);
         fillProcessRow(3, "VLC", vlcProcess_, vlcProcess_ && vlcProcess_->state() == QProcess::Running);
 
-        const qint64 rtlAge = lastRtlData_.isValid() ? lastRtlData_.msecsTo(QDateTime::currentDateTime()) / 1000 : -1;
-        const qint64 tsAge = lastTsData_.isValid() ? lastTsData_.msecsTo(QDateTime::currentDateTime()) / 1000 : -1;
-        signalLabel_->setText(QString("OFDM lock: %1\nSNR: %2\nService: %3\nProvider: %4")
-            .arg(ofdmLocked_ ? "ja" : "nee")
-            .arg(lastSnrText_)
-            .arg(lastServiceName_.isEmpty() ? "-" : lastServiceName_)
-            .arg(lastProviderName_.isEmpty() ? "-" : lastProviderName_));
-        countersLabel_->setText(QString("Input levert bytes: %1\nDecoder levert TS bytes: %2\nTijd sinds input data: %3\nTijd sinds TS data: %4\nTotaal input bytes: %5\nTotaal TS bytes: %6")
-            .arg(rtlBytes_ > 0 ? "ja" : "nee")
-            .arg(tsBytes_ > 0 ? "ja" : "nee")
-            .arg(rtlAge >= 0 ? QString::number(rtlAge) + " s" : "n.v.t.")
-            .arg(tsAge >= 0 ? QString::number(tsAge) + " s" : "n.v.t.")
+        const QString lockColor = ofdmLocked_ ? "#188038" : "#b3261e";
+        const QString lockText = ofdmLocked_ ? "LOCK" : "GEEN LOCK";
+        signalLabel_->setText(QString(
+            "<div style=\"font-size: 15px; line-height: 1.35;\">"
+            "<div><b>OFDM lock</b> "
+            "<span style=\"color: white; background-color: %1; padding: 3px 8px;\">%2</span></div>"
+            "<div><b>SNR</b> %3</div>"
+            "<div><b>Frequentie-offset</b> %4</div>"
+            "<div><b>Carrier-bin shift</b> %5</div>"
+            "<div><b>SDR level</b> %6</div>"
+            "<div><b>IQ niveau</b> %7</div>"
+            "<div><b>Service</b> %8</div>"
+            "<div><b>Provider</b> %9</div>"
+            "</div>")
+            .arg(lockColor, lockText, lastSnrText_, lastCfoText_, lastBinShiftText_,
+                 lastSdrLevelText_,
+                 lastIqLevelText_,
+                 lastServiceName_.isEmpty() ? "-" : lastServiceName_,
+                 lastProviderName_.isEmpty() ? "-" : lastProviderName_));
+        countersLabel_->setText(QString(
+            "<div style=\"font-size: 14px; line-height: 1.35;\">"
+            "<div><b>Input bytes</b> %1</div>"
+            "<div><b>TS bytes</b> %2</div>"
+            "</div>")
             .arg(rtlBytes_)
             .arg(tsBytes_));
 
@@ -1364,10 +1570,13 @@ private:
         text += QString("Instellingen: input_format=%1 frequentie=%2 sample_rate=%3 gain=%4 symbol_rate=%5 gi=%6 fec=%7 loglevel=%8\n")
             .arg(settings_.inputFormat, settings_.frequency, settings_.rtlSampleRate, settings_.gain, settings_.symbolRate, settings_.guard, settings_.fec, settings_.loglevel);
         text += QString("Bytes: rtl=%1 ts=%2\n").arg(rtlBytes_).arg(tsBytes_);
-        text += QString("Signaal: ofdm_lock=%1 pilot_lock=%2 snr=%3 service=\"%4\" provider=\"%5\"\n")
+        text += QString("Signaal: ofdm_lock=%1 pilot_lock=%2 snr=%3 frequentie_offset=%4 bin_shift=%5 iq=\"%6\" service=\"%7\" provider=\"%8\"\n")
             .arg(ofdmLocked_ ? "ja" : "nee")
             .arg(lastPilotLock_ >= 0.0 ? QString::number(lastPilotLock_, 'f', 5) : "-")
             .arg(lastSnrText_)
+            .arg(lastCfoText_)
+            .arg(lastBinShiftText_)
+            .arg(lastIqLevelText_)
             .arg(lastServiceName_, lastProviderName_);
         text += "Processen:\n";
         text += processSummary("RTL-SDR", rtlProcess_) + "\n";
@@ -1401,15 +1610,26 @@ private:
         log("Diagnose", "Diagnose naar clipboard gekopieerd.");
     }
 
+    void copyDecoderLogging()
+    {
+        QString text;
+        if (decoderLog_)
+            text = decoderLog_->toPlainText();
+        if (text.trimmed().isEmpty() && !decoderErr_.isEmpty())
+            text = decoderErr_.join("\n");
+        QGuiApplication::clipboard()->setText(text);
+        log("Diagnose", text.trimmed().isEmpty() ?
+            "Decoder logging is leeg; leeg clipboard gezet." :
+            "Decoder logging naar clipboard gekopieerd.");
+    }
+
     Settings settings_;
     QSettings *settingsStore_ = nullptr;
     QLineEdit *frequencyEdit_ = nullptr;
     QLineEdit *rtlRateEdit_ = nullptr;
     QLineEdit *gainEdit_ = nullptr;
-    QLineEdit *iqPathEdit_ = nullptr;
-    QLineEdit *symbolRateEdit_ = nullptr;
-    QComboBox *inputModeCombo_ = nullptr;
-    QComboBox *inputFormatCombo_ = nullptr;
+    QComboBox *inputDeviceCombo_ = nullptr;
+    QComboBox *symbolRateCombo_ = nullptr;
     QComboBox *guardCombo_ = nullptr;
     QComboBox *fecCombo_ = nullptr;
     QComboBox *loglevelCombo_ = nullptr;
@@ -1440,6 +1660,10 @@ private:
     bool ofdmLocked_ = false;
     double lastPilotLock_ = -1.0;
     QString lastSnrText_ = "-";
+    QString lastCfoText_ = "-";
+    QString lastBinShiftText_ = "-";
+    QString lastSdrLevelText_ = "-";
+    QString lastIqLevelText_ = "-";
     QString lastServiceName_;
     QString lastProviderName_;
     QDateTime lastRtlData_;
