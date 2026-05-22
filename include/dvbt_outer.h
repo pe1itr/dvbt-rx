@@ -6,6 +6,7 @@
 
 typedef struct {
     const char *status_json_path;
+    const char *ts_out_copy;
     uint32_t status_period_packets;
     const char *symbol_rate;
     const char *guard_interval;

@@ -67,6 +67,7 @@ typedef struct {
     const char *demap_out;
     const char *viterbi_out;
     const char *ts_out;
+    const char *ts_out_copy;
     int wait_video_start;
     const char *status_json;
     uint32_t status_period_packets;

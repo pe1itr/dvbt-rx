@@ -97,6 +97,9 @@ Op Windows kan optioneel `rbdvbt_gui.exe` worden gebouwd. Dit is een Qt 6
 launcher die `rtl_sdr.exe`, `rbdvbt_rx.exe` en VLC direct start, de IQ- en
 transportstream-pijpen zonder shell verbindt, VLC in het hoofdvenster embedded
 toont en diagnose-informatie naar het clipboard kan kopieren.
+De embedded VLC gebruikt intern UDP-poort 10002; tegelijk stuurt de GUI een
+tweede MPEG-TS kopie naar de configureerbare externe player-poort, standaard
+10000 voor een losse VLC met `udp://@:10000`.
 
 De Windows GUI is in dit project een ondersteunende launcher, geen algemene
 orchestrator. Het doel is Windows-gebruikers en meewerkende zendamateurs een
@@ -190,6 +193,8 @@ VLC lastig kunnen zijn:
 
 Open in VLC: `udp://@:10000`. Met ffplay kan dit met
 `ffplay -f mpegts udp://127.0.0.1:10000`.
+Gebruik `--udp-copy 127.0.0.1:10002` wanneer dezelfde transportstream ook naar
+een tweede lokale ontvanger moet.
 
 Aircraft-scatter looptest met 200/300/400 km, crossing-hoeken 30/70 graden,
 symbolrates 150k/250k/333k en SNR 3..9 dB:
@@ -390,6 +395,7 @@ Linux/X11 vensterinterface.
 | `--ts-out FILE` | Schrijf MPEG-TS naar bestand. Gebruik `-` voor `stdout` of `udp://IPv4:PORT` voor UDP. |
 | `--udp-ts IPv4:PORT` | Schrijf MPEG-TS via UDP, bijvoorbeeld `--udp-ts 127.0.0.1:10000` voor VLC op dezelfde computer. |
 | `--udp-out IPv4:PORT` | Alias voor `--udp-ts IPv4:PORT`. |
+| `--udp-copy IPv4:PORT` | Stuur dezelfde MPEG-TS ook naar een tweede UDP-doel. |
 | `--live` | Blijf stdin in opeenvolgende decode-chunks verwerken; bij zwakke chunks wordt opnieuw geacquireerd zonder het proces te stoppen. Stdout blijft uitsluitend MPEG-TS. |
 | `--live-symbols N` | Aantal OFDM-symbolen per live frontend chunk. `64` is de geteste standaard voor de huidige Linrad/SDR live pipeline. |
 | `--afc`, `--no-afc` | Zet live AFC aan of uit. AFC staat standaard uit en volgt alleen kleine carrier-bin drift wanneer pilot-lock sterk is of dezelfde drifttrend meerdere chunks zichtbaar blijft. |

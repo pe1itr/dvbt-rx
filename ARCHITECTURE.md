@@ -55,6 +55,9 @@ niet belast moeten worden met batchscripts, shell-pijpen of losse commandline
 stappen. De GUI mag dus gebruiksgemak bieden rond `rtl_sdr`, `rbdvbt_rx`, VLC en
 diagnostiek, maar verandert niet de kernarchitectuur: de receiver blijft de
 scriptbare backend en de GUI blijft een ondersteunende gebruikerslaag.
+Voor MPEG-TS video gebruikt de GUI twee UDP-doelen: een eigen poort voor de
+embedded VLC en een tweede kopie op de gebruikelijke externe VLC-poort, zodat
+een losse VLC de embedded speler niet kan blokkeren bij herstarten.
 
 Diagnose-upload naar een webserver hoort ook bij deze Windows GUI-laag, niet bij
 de receiver. Een knop zoals `Verstuur diagnose` mag logbestanden, status JSON,
@@ -290,6 +293,7 @@ handelt output en analyse af:
 continuity checks
 file writer
 UDP streamer
+optional second UDP copy
 TS analyzer
 status/statistics
 ```

@@ -1513,6 +1513,7 @@ static void init_status_context_from_config(const rbdvbt_config_t *cfg,
     memset(status, 0, sizeof(*status));
     snprintf(symbol_rate, symbol_rate_len, "%uks", (unsigned)(cfg->symbol_rate / 1000u));
     status->status_json_path = cfg->status_json;
+    status->ts_out_copy = cfg->ts_out_copy;
     status->status_period_packets = cfg->status_period_packets;
     status->symbol_rate = symbol_rate;
     status->guard_interval = rbdvbt_guard_interval_name(cfg->guard_interval);
@@ -8412,6 +8413,7 @@ static int write_dvbt2k_qpsk_constellation(const rbdvbt_config_t *cfg,
         memset(&status, 0, sizeof(status));
         snprintf(status_symbol_rate, sizeof(status_symbol_rate), "%uks", (unsigned)(cfg->symbol_rate / 1000u));
         status.status_json_path = cfg->status_json;
+        status.ts_out_copy = cfg->ts_out_copy;
         status.status_period_packets = cfg->status_period_packets;
         status.symbol_rate = status_symbol_rate;
         status.guard_interval = rbdvbt_guard_interval_name(cfg->guard_interval);

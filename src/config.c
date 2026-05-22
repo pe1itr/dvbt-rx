@@ -308,6 +308,10 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             static char udp_ts[128];
             snprintf(udp_ts, sizeof(udp_ts), "udp://%s", argv[++i]);
             cfg->ts_out = udp_ts;
+        } else if (strcmp(arg, "--udp-copy") == 0 && i + 1 < argc) {
+            static char udp_copy[128];
+            snprintf(udp_copy, sizeof(udp_copy), "udp://%s", argv[++i]);
+            cfg->ts_out_copy = udp_copy;
         } else if (strcmp(arg, "--wait-video-start") == 0) {
             cfg->wait_video_start = 1;
         } else if (strcmp(arg, "--status-json") == 0 && i + 1 < argc) {
@@ -409,7 +413,7 @@ void rbdvbt_print_usage(const char *argv0)
     fprintf(stderr,
             "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|150k|250k|333k|500k|125000|150000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|-|udp://127.0.0.1:10000 --wait-video-start\n"
             "       --gui --live-symbols N --afc --no-afc --loglevel quiet|error|warn|info|debug|trace --version --info\n"
-            "       use --ts-out -, --stdout-ts, --udp-ts IPv4:PORT, or --udp-out IPv4:PORT for MPEG-TS output; use --status-json status.json for receiver status]\n",
+            "       use --ts-out -, --stdout-ts, --udp-ts IPv4:PORT, or --udp-out IPv4:PORT for MPEG-TS output; use --udp-copy IPv4:PORT for a second UDP copy]\n",
             argv0);
 }
 
@@ -446,6 +450,7 @@ void rbdvbt_print_info(const char *argv0)
     printf("  --stdout-ts                      Equivalent to --ts-out -\n");
     printf("  --udp-ts IPv4:PORT               Equivalent to --ts-out udp://IPv4:PORT\n");
     printf("  --udp-out IPv4:PORT              Equivalent to --ts-out udp://IPv4:PORT\n");
+    printf("  --udp-copy IPv4:PORT             Send a second MPEG-TS UDP copy\n");
     printf("  --wait-video-start               Start TS output at a clean video start point\n");
     printf("  --status-json FILE.json          Write receiver status JSON\n");
     printf("  --status-period-packets N        Status update interval\n\n");

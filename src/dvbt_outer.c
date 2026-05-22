@@ -356,6 +356,7 @@ typedef struct {
     FILE *file;
     int is_udp;
     rbdvbt_udp_ts_output_t *udp;
+    rbdvbt_udp_ts_output_t *copy_udp;
     char label[128];
 } ts_output_sink_t;
 
@@ -2239,32 +2240,80 @@ static int ts_output_sink_open_udp(ts_output_sink_t *sink, const char *ts_path)
     return 0;
 }
 
-static int ts_output_sink_open(ts_output_sink_t *sink, const char *ts_path, int live_mode)
+static int ts_output_sink_open_copy(ts_output_sink_t *sink, const char *copy_path)
+{
+    char host[96];
+    uint16_t port;
+
+    if (copy_path == NULL || copy_path[0] == '\0') {
+        return 0;
+    }
+    if (ts_output_parse_udp_path(copy_path, host, sizeof(host), &port) != 0) {
+        fprintf(stderr, "invalid UDP TS copy output, expected udp://HOST:PORT: %s\n", copy_path);
+        return -1;
+    }
+    if (rbdvbt_udp_ts_output_open(&sink->copy_udp, host, port) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int ts_output_sink_open(ts_output_sink_t *sink,
+                               const char *ts_path,
+                               const char *copy_path,
+                               int live_mode)
 {
     memset(sink, 0, sizeof(*sink));
     snprintf(sink->label, sizeof(sink->label), "%s", ts_path != NULL ? ts_path : "-");
 
     if (ts_output_is_udp_path(ts_path)) {
-        return ts_output_sink_open_udp(sink, ts_path);
+        if (ts_output_sink_open_udp(sink, ts_path) != 0) {
+            return -1;
+        }
+        if (ts_output_sink_open_copy(sink, copy_path) != 0) {
+            rbdvbt_udp_ts_output_close(sink->udp);
+            sink->udp = NULL;
+            sink->is_udp = 0;
+            return -1;
+        }
+        return 0;
     }
     if (strcmp(ts_path, "-") == 0) {
         sink->file = stdout;
-        return 0;
+        return ts_output_sink_open_copy(sink, copy_path);
     }
 
     sink->file = fopen(ts_path, live_mode && live_ts_file_ready ? "ab" : "wb");
     if (sink->file != NULL && live_mode) {
         live_ts_file_ready = 1;
     }
-    return sink->file != NULL ? 0 : -1;
+    if (sink->file == NULL) {
+        return -1;
+    }
+    if (ts_output_sink_open_copy(sink, copy_path) != 0) {
+        if (sink->file != stdout) {
+            fclose(sink->file);
+        }
+        sink->file = NULL;
+        return -1;
+    }
+    return 0;
 }
 
 static int ts_output_sink_write(ts_output_sink_t *sink, const uint8_t *bytes, size_t byte_count)
 {
     if (sink->is_udp) {
-        return rbdvbt_udp_ts_output_write(sink->udp, bytes, byte_count);
+        if (rbdvbt_udp_ts_output_write(sink->udp, bytes, byte_count) != 0) {
+            return -1;
+        }
+    } else if (fwrite(bytes, 1, byte_count, sink->file) != byte_count) {
+        return -1;
     }
-    return fwrite(bytes, 1, byte_count, sink->file) == byte_count ? 0 : -1;
+    if (sink->copy_udp != NULL &&
+        rbdvbt_udp_ts_output_write(sink->copy_udp, bytes, byte_count) != 0) {
+        return -1;
+    }
+    return 0;
 }
 
 static void ts_output_sink_close(ts_output_sink_t *sink)
@@ -2277,6 +2326,10 @@ static void ts_output_sink_close(ts_output_sink_t *sink)
         sink->udp = NULL;
     } else if (sink->file != NULL && sink->file != stdout) {
         fclose(sink->file);
+    }
+    if (sink->copy_udp != NULL) {
+        rbdvbt_udp_ts_output_close(sink->copy_udp);
+        sink->copy_udp = NULL;
     }
     sink->file = NULL;
 }
@@ -3692,7 +3745,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
 	                      status != NULL ? status->input_samples : 0u);
 
     if (live_mode && !live_mpeg_sync_enabled) {
-        if (ts_output_sink_open(&sink, ts_path, live_mode) != 0) {
+        if (ts_output_sink_open(&sink, ts_path, status != NULL ? status->ts_out_copy : NULL, live_mode) != 0) {
             fprintf(stderr, "failed to open TS output: %s\n", ts_path);
             goto done;
         }
@@ -3909,7 +3962,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
 	            }
 	        }
 
-	        if (ts_output_sink_open(&sink, ts_path, live_mode) != 0) {
+        if (ts_output_sink_open(&sink, ts_path, status != NULL ? status->ts_out_copy : NULL, live_mode) != 0) {
             fprintf(stderr, "failed to open TS output: %s\n", ts_path);
             goto done;
         }
@@ -4178,7 +4231,7 @@ int rbdvbt_outer_recover_ts(const uint8_t *inner,
         goto done;
     }
 
-    if (ts_output_sink_open(&sink, ts_path, live_mode) != 0) {
+    if (ts_output_sink_open(&sink, ts_path, status != NULL ? status->ts_out_copy : NULL, live_mode) != 0) {
         fprintf(stderr, "failed to open TS output: %s\n", ts_path);
         goto done;
     }

@@ -19,6 +19,7 @@
 #include <QtGui/QClipboard>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QIntValidator>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
 #include <QtGui/QAction>
@@ -61,10 +62,11 @@ const char *kBuildVersion = RBDVBT_GUI_VERSION;
 const char *kBuildVersion = "0.1.3";
 #endif
 
-const char *kUdpTsBindUrl = "udp://@:10000";
-const char *kUdpTsOut = "127.0.0.1:10000";
+const char *kEmbeddedUdpTsPort = "10002";
+const char *kExternalUdpTsDefaultPort = "10000";
 const char *kVisualizerUdpOut = "127.0.0.1:10001";
 const quint16 kVisualizerUdpPort = 10001;
+const int kRxValueWidth = 180;
 
 quint16 readLe16(const char *p)
 {
@@ -203,6 +205,25 @@ QString frontendSymbolsForRate(const QString &symbolRate)
     return normalizeSymbolRate(symbolRate) == "150k" ? "128" : "64";
 }
 
+QString normalizeUdpPort(const QString &value)
+{
+    bool ok = false;
+    const int port = value.trimmed().toInt(&ok);
+    if (!ok || port <= 0 || port > 65535)
+        return kExternalUdpTsDefaultPort;
+    return QString::number(port);
+}
+
+QString udpOutEndpoint(const QString &port)
+{
+    return QString("127.0.0.1:%1").arg(normalizeUdpPort(port));
+}
+
+QString udpBindUrl(const QString &port)
+{
+    return QString("udp://@:%1").arg(normalizeUdpPort(port));
+}
+
 struct DependencyReport {
     bool ok = false;
     QString rtlPath;
@@ -227,6 +248,7 @@ struct Settings {
     QString guard = "1/32";
     QString fec = "2/3";
     QString loglevel = "quiet";
+    QString externalUdpPort = kExternalUdpTsDefaultPort;
 };
 
 class ConfigDialog : public QDialog {
@@ -241,6 +263,9 @@ public:
         rtlEdit_ = addPathRow(form, "rtl_sdr.exe", settings_.rtlPath);
         decoderEdit_ = addPathRow(form, "rbdvbt_rx.exe", settings_.decoderPath);
         vlcEdit_ = addPathRow(form, "vlc.exe", settings_.vlcPath);
+        externalUdpPortEdit_ = new QLineEdit(settings_.externalUdpPort, this);
+        externalUdpPortEdit_->setValidator(new QIntValidator(1, 65535, externalUdpPortEdit_));
+        form->addRow("Externe UDP poort", externalUdpPortEdit_);
 
         dllEdit_ = new QTextEdit(this);
         dllEdit_->setPlainText(settings_.dlls.join("\n"));
@@ -262,6 +287,7 @@ public:
         result.rtlPath = cleanPath(rtlEdit_->text());
         result.decoderPath = cleanPath(decoderEdit_->text());
         result.vlcPath = cleanPath(vlcEdit_->text());
+        result.externalUdpPort = normalizeUdpPort(externalUdpPortEdit_->text());
         result.dlls.clear();
         const QStringList lines = dllEdit_->toPlainText().split('\n');
         for (const QString &line : lines) {
@@ -296,6 +322,7 @@ private:
     QLineEdit *rtlEdit_ = nullptr;
     QLineEdit *decoderEdit_ = nullptr;
     QLineEdit *vlcEdit_ = nullptr;
+    QLineEdit *externalUdpPortEdit_ = nullptr;
     QTextEdit *dllEdit_ = nullptr;
 };
 
@@ -508,6 +535,7 @@ private:
         settings_.guard = normalizeGuard(settingsStore_->value("rx/guard", settings_.guard).toString());
         settings_.fec = normalizeFec(settingsStore_->value("rx/fec", settings_.fec).toString());
         settings_.loglevel = settingsStore_->value("rx/loglevel", settings_.loglevel).toString();
+        settings_.externalUdpPort = normalizeUdpPort(settingsStore_->value("rx/externalUdpPort", settings_.externalUdpPort).toString());
         restoreGeometry(settingsStore_->value("window/geometry").toByteArray());
     }
 
@@ -527,6 +555,7 @@ private:
         settingsStore_->setValue("rx/guard", settings_.guard);
         settingsStore_->setValue("rx/fec", settings_.fec);
         settingsStore_->setValue("rx/loglevel", settings_.loglevel);
+        settingsStore_->setValue("rx/externalUdpPort", normalizeUdpPort(settings_.externalUdpPort));
         settingsStore_->setValue("window/geometry", saveGeometry());
         settingsStore_->sync();
     }
@@ -560,7 +589,7 @@ private:
         auto *top = new QGridLayout();
         top->addWidget(buildRxBox(), 0, 0);
         top->addWidget(buildStatusBox(), 0, 1);
-        top->setColumnStretch(0, 2);
+        top->setColumnStretch(0, 0);
         top->setColumnStretch(1, 1);
         root->addLayout(top);
 
@@ -645,6 +674,8 @@ private:
         signalLabel_ = new QLabel(box);
         signalLabel_->setTextFormat(Qt::RichText);
         signalLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        signalLabel_->setMinimumWidth(signalLabel_->fontMetrics().horizontalAdvance(
+            "IQ niveau rms -120.0 dBFS  piek -120.0 dBFS  clip 100.0000%") + 32);
         layout->addWidget(signalLabel_);
         countersLabel_ = new QLabel(box);
         countersLabel_->setTextFormat(Qt::RichText);
@@ -655,9 +686,11 @@ private:
         auto *runLayout = new QHBoxLayout();
         startButton_ = new QPushButton("START", box);
         stopButton_ = new QPushButton("STOP", box);
+        externalVlcButton_ = new QPushButton("EXTERNE VLC", box);
         stopButton_->setEnabled(false);
         runLayout->addWidget(startButton_);
         runLayout->addWidget(stopButton_);
+        runLayout->addWidget(externalVlcButton_);
         layout->addLayout(runLayout);
 
         auto *presetGrid = new QGridLayout();
@@ -669,6 +702,7 @@ private:
 
         connect(startButton_, &QPushButton::clicked, this, &MainWindow::startPipeline);
         connect(stopButton_, &QPushButton::clicked, this, &MainWindow::stopPipeline);
+        connect(externalVlcButton_, &QPushButton::clicked, this, &MainWindow::startExternalPlayer);
         layout->addStretch(1);
         return box;
     }
@@ -730,6 +764,7 @@ private:
     QLineEdit *addLine(QGridLayout *layout, const QString &label, const QString &value, int row)
     {
         auto *edit = new QLineEdit(value, this);
+        edit->setMaximumWidth(kRxValueWidth);
         layout->addWidget(new QLabel(label, this), row, 0);
         layout->addWidget(edit, row, 1, 1, 2);
         return edit;
@@ -754,6 +789,7 @@ private:
     {
         auto *combo = new QComboBox(this);
         combo->addItems(items);
+        combo->setMaximumWidth(kRxValueWidth);
         const int idx = combo->findText(value);
         if (idx >= 0)
             combo->setCurrentIndex(idx);
@@ -906,6 +942,30 @@ private:
         log("Diagnose", QString("Decoder loglevel ingesteld op %1.").arg(level));
     }
 
+    void startExternalPlayer()
+    {
+        readSettingsFromUi();
+        settings_.externalUdpPort = normalizeUdpPort(settings_.externalUdpPort);
+        const QString vlcPath = resolveConfiguredExe(settings_.vlcPath, "vlc.exe",
+            {"C:/Program Files/VideoLAN/VLC/vlc.exe", "C:/Program Files (x86)/VideoLAN/VLC/vlc.exe"});
+        if (!isUsableExe(vlcPath)) {
+            QMessageBox::warning(this, "VLC niet gevonden", "VLC kon niet worden gestart. Controleer het pad naar vlc.exe in Configuratie.");
+            log("Diagnose", "Externe VLC niet gestart: vlc.exe niet gevonden.");
+            return;
+        }
+
+        settings_.vlcPath = vlcPath;
+        saveSettings();
+        const QString url = udpBindUrl(settings_.externalUdpPort);
+        const QStringList args = {"--no-video-title-show", url};
+        if (!QProcess::startDetached(vlcPath, args)) {
+            QMessageBox::warning(this, "VLC start mislukt", QString("VLC kon niet worden gestart voor %1.").arg(url));
+            log("Diagnose", QString("Externe VLC start mislukt: %1 %2").arg(vlcPath, args.join(' ')));
+            return;
+        }
+        log("Diagnose", QString("Externe VLC gestart op %1.").arg(url));
+    }
+
     void showInfo()
     {
         QDialog dialog(this);
@@ -1018,11 +1078,14 @@ private:
             QStringList({"-f", settings_.frequency, "-s", settings_.rtlSampleRate, "-g", settings_.gain, "-"});
         decoderCommand_ = report.decoderPath;
         const QString frontendSymbols = frontendSymbolsForRate(settings_.symbolRate);
+        const QString embeddedUdpOut = udpOutEndpoint(kEmbeddedUdpTsPort);
+        const QString externalUdpOut = udpOutEndpoint(settings_.externalUdpPort);
+        const QString embeddedUdpBind = udpBindUrl(kEmbeddedUdpTsPort);
         decoderArgs_ = {"--stdin", "--live", "--resample-to-dvbt-rate",
                         "--input-format", settings_.inputFormat, "--sample-rate", settings_.rtlSampleRate,
                         "--sr", settings_.symbolRate, "--gi", settings_.guard, "--fec", settings_.fec,
                         "--live-symbols", frontendSymbols, "--probe-symbols", frontendSymbols,
-                        "--udp-out", kUdpTsOut, "--wait-video-start",
+                        "--udp-out", embeddedUdpOut, "--udp-copy", externalUdpOut, "--wait-video-start",
                         "--status-json", decoderStatusJsonPath_,
                         "--visualizer-udp", kVisualizerUdpOut,
                         "--loglevel", settings_.loglevel};
@@ -1030,9 +1093,10 @@ private:
         const quintptr hwnd = quintptr(videoWidget_->winId());
         vlcArgs_ = {"--intf", "dummy", "--dummy-quiet",
                     "--drawable-hwnd", QString::number(hwnd),
-                    "--no-video-title-show", "--quiet", kUdpTsBindUrl};
+                    "--no-video-title-show", "--quiet", embeddedUdpBind};
 
-        log("Diagnose", "Pipeline starten zonder shell; TS loopt via UDP naar VLC.");
+        log("Diagnose", QString("Pipeline starten zonder shell; embedded VLC gebruikt UDP :%1, externe VLC kan udp://@:%2 gebruiken.")
+            .arg(kEmbeddedUdpTsPort, normalizeUdpPort(settings_.externalUdpPort)));
         if (settings_.inputMode == "file")
             log("Diagnose", QString("IQ bestand: %1").arg(settings_.iqPath));
         else
@@ -1571,8 +1635,8 @@ private:
         text += commandLine("Decoder", decoderCommand_, decoderArgs_) + "\n";
         text += commandLine("VLC", vlcCommand_, vlcArgs_) + "\n\n";
         text += "Dependency check:\n" + lastDependencyReport_.lines.join("\n") + "\n\n";
-        text += QString("Instellingen: input_format=%1 frequentie=%2 sample_rate=%3 gain=%4 symbol_rate=%5 gi=%6 fec=%7 loglevel=%8\n")
-            .arg(settings_.inputFormat, settings_.frequency, settings_.rtlSampleRate, settings_.gain, settings_.symbolRate, settings_.guard, settings_.fec, settings_.loglevel);
+        text += QString("Instellingen: input_format=%1 frequentie=%2 sample_rate=%3 gain=%4 symbol_rate=%5 gi=%6 fec=%7 loglevel=%8 externe_udp_poort=%9\n")
+            .arg(settings_.inputFormat, settings_.frequency, settings_.rtlSampleRate, settings_.gain, settings_.symbolRate, settings_.guard, settings_.fec, settings_.loglevel, settings_.externalUdpPort);
         text += QString("Bytes: rtl=%1 ts=%2\n").arg(rtlBytes_).arg(tsBytes_);
         text += QString("Signaal: ofdm_lock=%1 pilot_lock=%2 snr=%3 frequentie_offset=%4 bin_shift=%5 iq=\"%6\" service=\"%7\" provider=\"%8\"\n")
             .arg(ofdmLocked_ ? "ja" : "nee")
@@ -1639,6 +1703,7 @@ private:
     QComboBox *loglevelCombo_ = nullptr;
     QPushButton *startButton_ = nullptr;
     QPushButton *stopButton_ = nullptr;
+    QPushButton *externalVlcButton_ = nullptr;
     QWidget *videoWidget_ = nullptr;
     SpectrumWidget *spectrumWidget_ = nullptr;
     ConstellationWidget *constellationWidget_ = nullptr;
