@@ -87,6 +87,7 @@ Belangrijkste binaries:
 build/rbdvbt_rx             DVB-T receiver
 build/rbdvbt_status_watch   terminal monitor voor status JSON
 build/dvbt_fec_snr_plot     hulpprogramma voor performancegrafieken
+build/iq_replay_rate        speelt een IQ-bestand realtime naar stdout af
 build/portsdown_iq_dump     maakt een synthetisch DVB-T IQ-bestand, alleen wanneer other_parties/portsdown4 aanwezig is
 build/iq_airscatter_channel past een aircraft-scatter kanaal toe op s16 IQ
 ```
@@ -152,6 +153,33 @@ Naar een TS-bestand schrijven:
   --ts-out recovered.ts \
   < capture.iq
 ```
+
+Een IQ-bestand als realtime SDR-stream naar de live decoder voeren:
+
+```sh
+./build/iq_replay_rate \
+  --in recordings/linrad_20260516_222622_s16.iq \
+  --input-format s16 \
+  --sample-rate 1010526 |
+./build/rbdvbt_rx \
+  --probe-constellation \
+  --resample-to-dvbt-rate \
+  --dvbt-ir 1 \
+  --stdin \
+  --input-format s16 \
+  --sample-rate 1010526 \
+  --sr 250k \
+  --gi 1/32 \
+  --fec 1/2 \
+  --live \
+  --live-symbols 64 \
+  --probe-symbols 64 \
+  --ts-out recovered-250k.ts
+```
+
+Gebruik voor `150k` normaal `--sr 150k --live-symbols 128 --probe-symbols 128`.
+`iq_replay_rate` schrijft alleen IQ-bytes naar `stdout`; voortgang gaat naar
+`stderr`, zodat de pipe naar `rbdvbt_rx` schoon blijft.
 
 Met status JSON:
 

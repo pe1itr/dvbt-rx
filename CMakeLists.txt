@@ -122,6 +122,16 @@ target_compile_options(iq_airscatter_channel PRIVATE
     -Wpedantic
 )
 
+add_executable(iq_replay_rate
+    tools/iq_replay_rate.c
+)
+
+target_compile_options(iq_replay_rate PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 if(WIN32)
     option(RBDVBT_BUILD_GUI "Build the Windows Qt GUI launcher" ON)
 endif()
