@@ -13,6 +13,7 @@ typedef enum {
 } rbdvbt_input_format_t;
 
 typedef enum {
+    RBDVBT_SR_35K = 35000,
     RBDVBT_SR_125K = 125000,
     RBDVBT_SR_150K = 150000,
     RBDVBT_SR_250K = 250000,

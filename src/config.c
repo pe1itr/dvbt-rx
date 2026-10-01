@@ -70,7 +70,9 @@ static int parse_symbol_rate(const char *text, rbdvbt_symbol_rate_t *out)
 {
     uint32_t hz = 0;
 
-    if (strcmp(text, "125k") == 0 || strcmp(text, "125ks") == 0) {
+    if (strcmp(text, "35k") == 0 || strcmp(text, "35ks") == 0) {
+        *out = RBDVBT_SR_35K;
+    } else if (strcmp(text, "125k") == 0 || strcmp(text, "125ks") == 0) {
         *out = RBDVBT_SR_125K;
     } else if (strcmp(text, "150k") == 0 || strcmp(text, "150ks") == 0) {
         *out = RBDVBT_SR_150K;
@@ -81,7 +83,9 @@ static int parse_symbol_rate(const char *text, rbdvbt_symbol_rate_t *out)
     } else if (strcmp(text, "500k") == 0 || strcmp(text, "500ks") == 0) {
         *out = RBDVBT_SR_500K;
     } else if (parse_u32(text, &hz) == 0) {
-        if (hz == 125000u) {
+        if (hz == 35000u) {
+            *out = RBDVBT_SR_35K;
+        } else if (hz == 125000u) {
             *out = RBDVBT_SR_125K;
         } else if (hz == 150000u) {
             *out = RBDVBT_SR_150K;
@@ -242,7 +246,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
             }
         } else if ((strcmp(arg, "--sr") == 0 || strcmp(arg, "--symbol-rate") == 0) && i + 1 < argc) {
             if (parse_symbol_rate(argv[++i], &cfg->symbol_rate) != 0) {
-                fprintf(stderr, "invalid --sr value; expected 125k, 150k, 250k, 333k, 500k, or Hz 125000, 150000, 250000, 333000, 333333, 500000\n");
+                fprintf(stderr, "invalid --sr value; expected 35k, 125k, 150k, 250k, 333k, 500k, or Hz 35000, 125000, 150000, 250000, 333000, 333333, 500000\n");
                 return -1;
             }
         } else if (strcmp(arg, "--gi") == 0 && i + 1 < argc) {
@@ -411,7 +415,7 @@ int rbdvbt_parse_args(int argc, char **argv, rbdvbt_config_t *cfg)
 void rbdvbt_print_usage(const char *argv0)
 {
     fprintf(stderr,
-            "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 125k|150k|250k|333k|500k|125000|150000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|-|udp://127.0.0.1:10000 --wait-video-start\n"
+            "usage: %s --stdin --input-format s16 --sample-rate HZ --sr 35k|125k|150k|250k|333k|500k|35000|125000|150000|250000|333000|333333|500000 --gi auto|1/8|1/16|1/32 [--fec auto|1/2|2/3|3/4|5/6|7/8 --live --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 --constellation-out qpsk.csv --demap-out dibits.csv --viterbi-out inner.bin --ts-out recovered.ts|-|udp://127.0.0.1:10000 --wait-video-start\n"
             "       --gui --live-symbols N --afc --no-afc --loglevel quiet|error|warn|info|debug|trace --version --info\n"
             "       use --ts-out -, --stdout-ts, --udp-ts IPv4:PORT, or --udp-out IPv4:PORT for MPEG-TS output; use --udp-copy IPv4:PORT for a second UDP copy]\n",
             argv0);
@@ -427,18 +431,18 @@ void rbdvbt_print_info(const char *argv0)
     printf("  DVB-T QPSK signals, including live SDR streams and IQ recordings.\n\n");
     printf("Supported DVB-T modes:\n");
     printf("  Symbol rates: 150k, 250k, 333k, 500k");
-    printf("  (125k is also accepted as an experimental preset)\n");
+    printf("  (35k and 125k are also accepted as experimental presets)\n");
     printf("  FEC: auto, 1/2, 2/3, 3/4, 5/6, 7/8\n");
     printf("  Guard interval: auto, 1/8, 1/16, 1/32\n");
     printf("  Constellation: QPSK\n");
     printf("  FFT mode: DVB-T 2K\n\n");
     printf("Usage:\n");
-    printf("  %s --stdin --input-format s16 --sample-rate HZ --sr 150k|250k|333k|500k --gi auto|1/8|1/16|1/32 --fec auto|1/2|2/3|3/4|5/6|7/8 --ts-out FILE|-|udp://IPv4:PORT\n\n", argv0);
+    printf("  %s --stdin --input-format s16 --sample-rate HZ --sr 35k|125k|150k|250k|333k|500k --gi auto|1/8|1/16|1/32 --fec auto|1/2|2/3|3/4|5/6|7/8 --ts-out FILE|-|udp://IPv4:PORT\n\n", argv0);
     printf("Core options:\n");
     printf("  --stdin                         Read IQ from stdin\n");
     printf("  --input-format s16|u8            Input IQ format, default s16\n");
     printf("  --sample-rate HZ                 Input IQ sample rate\n");
-    printf("  --sr RATE                        Symbol rate: 150k, 250k, 333k, 500k, or numeric Hz\n");
+    printf("  --sr RATE                        Symbol rate: 35k, 125k, 150k, 250k, 333k, 500k, or numeric Hz\n");
     printf("  --gi auto|1/8|1/16|1/32          Guard interval\n");
     printf("  --fec auto|1/2|2/3|3/4|5/6|7/8   Inner FEC code rate\n");
     printf("  --dvbt-ir 1|2|4|8                DVB-T interpolation/rate factor\n");
@@ -540,6 +544,8 @@ const char *rbdvbt_input_format_name(rbdvbt_input_format_t fmt)
 const char *rbdvbt_symbol_rate_name(rbdvbt_symbol_rate_t sr)
 {
     switch (sr) {
+    case RBDVBT_SR_35K:
+        return "35k";
     case RBDVBT_SR_125K:
         return "125k";
     case RBDVBT_SR_150K:

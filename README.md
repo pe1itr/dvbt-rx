@@ -381,7 +381,7 @@ Linux/X11 vensterinterface.
 
 | Parameter | Keuzes | Betekenis |
 |---|---|---|
-| `--sr` | `150k`, `250k`, `333k`, `500k`, of `150000`, `250000`, `333000`, `333333`, `500000` | DVB-T symbolrate preset of numerieke Hz-waarde. `125k`/`125000` wordt ook geaccepteerd als experimentele preset; `333000` en `333333` kiezen de 333k mode. |
+| `--sr` | `150k`, `250k`, `333k`, `500k`, of `150000`, `250000`, `333000`, `333333`, `500000` | DVB-T symbolrate preset of numerieke Hz-waarde. `35k`/`35ks`/`35000` en `125k`/`125000` worden ook geaccepteerd als experimentele presets; `333000` en `333333` kiezen de 333k mode. |
 | `--gi` | `auto`, `1/8`, `1/16`, `1/32` | Guard interval. `auto` kiest via cyclic-prefix correlatie. |
 | `--fec` | `auto`, `1/2`, `2/3`, `3/4`, `5/6`, `7/8` | Inner FEC puncturing rate. `auto` kiest via Viterbi + outer TS score. |
 | `--dvbt-ir` | `1`, `2`, `4`, `8` | Interpolation/rate factor voor de DVB-T sample grid. |
@@ -440,6 +440,31 @@ lagere netto bitrate.
 | `333k` | Goede keuze als het reflectiemoment stabiel genoeg is en throughput telt. |
 | `250k` | Praktische middenweg voor aircraft-scatter tests. |
 | `150k` | Robuust wanneer het bruikbare moment kort is of fading dominant is. |
+
+### Experimentele 35 kHz bandbreedte
+
+Gebruik `--sr 35k` (ook `35ks` of `35000`) voor een nominale DVB-T
+bandbreedte van 35 kHz, volgens dezelfde `--sr`-conventie als de andere modes.
+Met `--dvbt-ir 1` is de interne IQ-samplerate `35000 * 8/7 = 40000` Hz.
+`--sample-rate` blijft de werkelijke samplerate van de IQ-bron; met
+`--resample-to-dvbt-rate` rekent de ontvanger die om naar 40.000 Hz.
+
+Voor een s16-IQ-opname op 40.000 samples/s schrijft dit MPEG-TS naar een bestand:
+
+```sh
+./build/rbdvbt_rx \
+  --stdin --input-format s16 --sample-rate 40000 \
+  --sr 35k --gi 1/32 --fec 1/2 \
+  --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 \
+  --ts-out recovered-35k.ts < capture-35k.iq
+```
+
+Zender en ontvanger moeten dezelfde bandbreedte, FEC en guard gebruiken.
+Bij QPSK, FEC `1/2` en GI `1/32` is de netto TS-bitrate circa 26,4 kbit/s,
+inclusief de MPEG-TS-overhead. Een OFDM-symbool duurt dan 52,8 ms; een live
+frontendblok van 64 symbolen omvat circa 3,38 seconden signaal. Houd dus
+rekening met langere acquisitie- en buffertijden. Deze mode is experimenteel;
+ontvangst via RF moet nog worden beproefd.
 
 ### FEC
 
