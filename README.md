@@ -473,6 +473,8 @@ lagere netto bitrate.
 
 Gebruik `--sr 35k` (ook `35ks` of `35000`) voor een nominale DVB-T
 bandbreedte van 35 kHz, volgens dezelfde `--sr`-conventie als de andere modes.
+Vanaf Windows-versie 0.1.5 is `35k` ook te kiezen in de GUI bij
+`DVB-T symbol rate`.
 Met `--dvbt-ir 1` is de interne IQ-samplerate `35000 * 8/7 = 40000` Hz.
 `--sample-rate` blijft de werkelijke samplerate van de IQ-bron; met
 `--resample-to-dvbt-rate` rekent de ontvanger die om naar 40.000 Hz.
