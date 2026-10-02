@@ -75,7 +75,7 @@ Start VLC eerst; de decoder-pipe blijft live draaien en keert normaal niet
 terug zolang de ontvangst loopt.
 
 ```bat
-cd /d C:\HamRadio\rbdvbt_gui-windows-x64-0.1.3
+cd /d C:\HamRadio\rbdvbt_gui-windows-x64-0.1.4
 start "" "C:\Program Files\VideoLAN\VLC\vlc.exe" udp://@:10000
 rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --resample-to-dvbt-rate --input-format u8 --sample-rate 1010526 --sr 250k --gi 1/32 --fec 2/3 --live-symbols 64 --probe-symbols 64 --udp-out 127.0.0.1:10000 --wait-video-start --status-json rx_status.json --loglevel quiet
 ```
@@ -83,7 +83,7 @@ rtl_sdr.exe -f 437000000 -s 1010526 -g 30 - | rbdvbt_rx.exe --stdin --live --res
 De GUI voert dezelfde pipeline uit zonder batchfile en zonder shell-pipe, en
 start VLC zelf met `udp://@:10000`.
 Bij `150k` start de GUI de decoder met `--live-symbols 128 --probe-symbols 128`;
-bij `250k` en `333k` gebruikt de GUI `--live-symbols 64 --probe-symbols 64`.
+bij `40k`, `250k` en `333k` gebruikt de GUI `--live-symbols 64 --probe-symbols 64`.
 
 ## Gebruik
 
@@ -138,7 +138,7 @@ IQ-formaat; RTL-SDR live gebruikt altijd `u8`.
 Controleer daarna:
 
 - `Sample rate`: de sample-rate waarmee het IQ-bestand is opgenomen
-- `DVB-T symbol rate`: `150k`, `250k` of `333k`
+- `DVB-T symbol rate`: `40k` (experimenteel), `150k`, `250k` of `333k`
 - `Guard interval` en `FEC`; het decoder-loglevel staat onder `Logging`
 
 In deze modus wordt `rtl_sdr.exe` niet gestart en zijn `librtlsdr.dll` /

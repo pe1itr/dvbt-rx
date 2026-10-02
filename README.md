@@ -497,7 +497,8 @@ ontvangst via RF moet nog worden beproefd.
 ### Experimentele 40 kHz bandbreedte
 
 Gebruik `--sr 40k` (ook `40ks` of `40000`) voor een nominale DVB-T
-bandbreedte van 40 kHz. Met `--dvbt-ir 1` is de interne IQ-samplerate
+bandbreedte van 40 kHz. Vanaf Windows-versie 0.1.4 is `40k` ook te kiezen
+in de GUI bij `DVB-T symbol rate`. Met `--dvbt-ir 1` is de interne IQ-samplerate
 `40000 * 8/7 ≈ 45714,286` samples/s. Dit verschilt van de 35 kHz-mode,
 die intern 40.000 samples/s gebruikt. Geef bij `--sample-rate` altijd de
 werkelijke samplerate van de IQ-bron op; `--resample-to-dvbt-rate` verzorgt

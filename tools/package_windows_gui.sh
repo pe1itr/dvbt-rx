@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${1:-0.1.3}"
+version="${1:-0.1.4}"
 root_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 build_dir="${root_dir}/build-win"
 dist_dir="${root_dir}/dist"

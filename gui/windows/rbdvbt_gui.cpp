@@ -59,7 +59,7 @@ namespace {
 #ifdef RBDVBT_GUI_VERSION
 const char *kBuildVersion = RBDVBT_GUI_VERSION;
 #else
-const char *kBuildVersion = "0.1.3";
+const char *kBuildVersion = "0.1.4";
 #endif
 
 const char *kEmbeddedUdpTsPort = "10002";
@@ -175,6 +175,8 @@ QStringList splitLines(const QByteArray &data)
 QString normalizeSymbolRate(const QString &value)
 {
     const QString v = value.trimmed().toLower();
+    if (v == "40000" || v == "40k" || v == "40ks")
+        return "40k";
     if (v == "150000" || v == "150k")
         return "150k";
     if (v == "250000" || v == "250k")
@@ -660,7 +662,7 @@ private:
         frequencyEdit_ = addLine(layout, "Frequentie Hz", settings_.frequency, 1);
         rtlRateEdit_ = addLine(layout, "Sample rate", settings_.rtlSampleRate, 2);
         gainEdit_ = addLine(layout, "Gain", settings_.gain, 3);
-        symbolRateCombo_ = addCombo(layout, "DVB-T symbol rate", {"150k", "250k", "333k"}, settings_.symbolRate, 4);
+        symbolRateCombo_ = addCombo(layout, "DVB-T symbol rate", {"40k", "150k", "250k", "333k"}, settings_.symbolRate, 4);
         guardCombo_ = addCombo(layout, "Guard interval", {"auto", "1/32"}, settings_.guard, 5);
         fecCombo_ = addCombo(layout, "FEC", {"auto", "1/2", "2/3"}, settings_.fec, 6);
 
