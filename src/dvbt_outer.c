@@ -1252,6 +1252,9 @@ static uint32_t status_symbol_rate_hz(const rbdvbt_status_context_t *status)
     if (strstr(status->symbol_rate, "35") != NULL) {
         return 35000u;
     }
+    if (strstr(status->symbol_rate, "40") != NULL) {
+        return 40000u;
+    }
     if (strstr(status->symbol_rate, "150") != NULL) {
         return 150000u;
     }

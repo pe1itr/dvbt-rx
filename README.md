@@ -409,7 +409,7 @@ Linux/X11 vensterinterface.
 
 | Parameter | Keuzes | Betekenis |
 |---|---|---|
-| `--sr` | `150k`, `250k`, `333k`, `500k`, of `150000`, `250000`, `333000`, `333333`, `500000` | DVB-T symbolrate preset of numerieke Hz-waarde. `35k`/`35ks`/`35000` en `125k`/`125000` worden ook geaccepteerd als experimentele presets; `333000` en `333333` kiezen de 333k mode. |
+| `--sr` | `150k`, `250k`, `333k`, `500k`, of `150000`, `250000`, `333000`, `333333`, `500000` | DVB-T symbolrate preset of numerieke Hz-waarde. `35k`/`35ks`/`35000`, `40k`/`40ks`/`40000` en `125k`/`125000` worden ook geaccepteerd als experimentele presets; `333000` en `333333` kiezen de 333k mode. |
 | `--gi` | `auto`, `1/8`, `1/16`, `1/32` | Guard interval. `auto` kiest via cyclic-prefix correlatie. |
 | `--fec` | `auto`, `1/2`, `2/3`, `3/4`, `5/6`, `7/8` | Inner FEC puncturing rate. `auto` kiest via Viterbi + outer TS score. |
 | `--dvbt-ir` | `1`, `2`, `4`, `8` | Interpolation/rate factor voor de DVB-T sample grid. |
@@ -493,6 +493,31 @@ inclusief de MPEG-TS-overhead. Een OFDM-symbool duurt dan 52,8 ms; een live
 frontendblok van 64 symbolen omvat circa 3,38 seconden signaal. Houd dus
 rekening met langere acquisitie- en buffertijden. Deze mode is experimenteel;
 ontvangst via RF moet nog worden beproefd.
+
+### Experimentele 40 kHz bandbreedte
+
+Gebruik `--sr 40k` (ook `40ks` of `40000`) voor een nominale DVB-T
+bandbreedte van 40 kHz. Met `--dvbt-ir 1` is de interne IQ-samplerate
+`40000 * 8/7 ≈ 45714,286` samples/s. Dit verschilt van de 35 kHz-mode,
+die intern 40.000 samples/s gebruikt. Geef bij `--sample-rate` altijd de
+werkelijke samplerate van de IQ-bron op; `--resample-to-dvbt-rate` verzorgt
+de omzetting.
+
+Voor een s16-IQ-opname op 96.000 samples/s schrijft dit MPEG-TS naar een bestand:
+
+```sh
+./build/rbdvbt_rx \
+  --stdin --input-format s16 --sample-rate 96000 \
+  --sr 40k --gi 1/32 --fec 1/2 \
+  --probe-constellation --resample-to-dvbt-rate --dvbt-ir 1 \
+  --ts-out recovered-40k.ts < capture-40k.iq
+```
+
+Zender en ontvanger moeten dezelfde bandbreedte, FEC en guard gebruiken.
+Bij QPSK, FEC `1/2` en GI `1/32` is de netto TS-bitrate circa 30,2 kbit/s,
+inclusief de MPEG-TS-overhead. Een OFDM-symbool duurt dan 46,2 ms; een live
+frontendblok van 64 symbolen omvat circa 2,96 seconden signaal. Ook deze
+mode is experimenteel; ontvangst via RF moet nog worden beproefd.
 
 ### FEC
 
