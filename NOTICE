@@ -1,0 +1,21 @@
+DVB-T / RTL-SDR interface
+Copyright (c) 2026 Rob Hardenberg / PE1ITR.
+
+The Qt6 interface and original helper programs in this repository retain the
+attribution-required license in LICENSE.
+
+The rbdvbt_rx executable is compiled directly from the DVB-T component in:
+  https://github.com/pe1itr/sdr-dvb-pipelines
+  components/dvbt
+Copyright (c) 2026 Rob Hardenberg / PE1ITR.
+That component is licensed under GPL-3.0-only. Its license is reproduced in
+licenses/DECODER-GPL-3.0.txt; the authoritative copy accompanies the component.
+Validated source revision: 0f9665321ae70f39e01c8ef84ebdef2b802f89bd.
+
+When distributing the decoder, include its GPL license and provide the
+corresponding source for the exact revision and modifications used in the
+build, including build instructions. Do not label the current decoder with
+the older custom attribution license. A build using another decoder revision
+must provide that revision's corresponding source.
+
+Qt6, FFTW, RTL-SDR, libusb and VLC retain their respective licenses.

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${1:-0.1.5}"
+version="${1:-0.2.0}"
 root_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 build_dir="${root_dir}/build-win"
 dist_dir="${root_dir}/dist"
@@ -20,6 +20,10 @@ install -m 755 "${build_dir}/rbdvbt_rx.exe" "${package_dir}/rbdvbt_rx.exe"
 install -m 644 "${root_dir}/README_WINDOWS_GUI.txt" "${package_dir}/README_WINDOWS_GUI.txt"
 install -m 644 "${root_dir}/README.md" "${package_dir}/README.md"
 install -m 644 "${root_dir}/README.md" "${package_dir}/README_PROJECT.md"
+install -m 644 "${root_dir}/LICENSE" "${package_dir}/LICENSE"
+install -m 644 "${root_dir}/NOTICE" "${package_dir}/NOTICE"
+mkdir -p "${package_dir}/licenses"
+install -m 644 "${root_dir}/licenses/DECODER-GPL-3.0.txt" "${package_dir}/licenses/DECODER-GPL-3.0.txt"
 if [ -f "${root_dir}/RELEASE_WINDOWS_${version}.md" ]; then
     install -m 644 "${root_dir}/RELEASE_WINDOWS_${version}.md" "${package_dir}/RELEASE_WINDOWS_${version}.md"
 fi

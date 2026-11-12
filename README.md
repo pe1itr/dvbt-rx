@@ -1,13 +1,48 @@
-# rbdvbt_rx
+# DVB-T / RTL-SDR
 
-`rbdvbt_rx` is een reduced-bandwidth DVB-T ontvanger voor amateur-DATV
-experimenten. Het programma is bedoeld om achter een SDR-ontvanger of
-IQ-opname te draaien. Het leest raw complex IQ van `stdin`, demoduleert een
-bekend DVB-T QPSK signaal en schrijft MPEG-TS pakketten naar `stdout` of naar
-een bestand.
+Een compacte **Qt6-ontvanger voor reduced-bandwidth DVB-T met RTL-SDR**.
+De hoofdvensterindeling volgt `linrad_dvb`: een bedieningsbalk bovenaan,
+waterval en spectrum over de volle breedte, en daaronder constellatie links,
+ontvangststatus in het midden en video rechts.
 
-Het programma is bedoeld voor Portsdown-achtige DVB-T signalen met lage
-symbolrates, bijvoorbeeld `150k`, `250k` en `333k`.
+De **enige DVB-T-decoderbron** is `sdr-dvb-pipelines/components/dvbt`.
+Deze repository bouwt daaruit `rbdvbt_rx` en voegt de RTL-SDR-interface toe.
+Er is geen tweede decoderimplementatie of automatische terugval naar de oude
+broncode. Decoderontwikkeling blijft in `sdr-dvb-pipelines`.
+
+De GUI ondersteunt uitsluitend RTL-SDR en DVB-T 2K QPSK. De nominale
+bandbreedtes zijn 35, 40, 125, 150, 250, 333 en 500 kHz; 35/40/125 kHz blijven
+experimenteel. IQ-bestanden blijven bruikbaar via de decoder-CLI voor tests.
+
+## Snel starten
+
+Zorg dat `sdr-dvb-pipelines` naast deze repository staat (zie Installatie):
+
+```sh
+cmake -S . -B build
+cmake --build build -j
+./build/rbdvbt_gui
+```
+
+1. Kies frequentie, gain, bandbreedte, FEC en guard interval.
+2. Kies bij **Instellingen** het RTL-SDR device (index of serienummer),
+   IQ-samplerate en eventueel ppm-correctie. Standaard: device `0`,
+   1.010.526 samples/s, 436 MHz, 333 kHz, FEC 2/3, GI 1/32, gain 30 dB.
+3. Druk op **Start ontvangst**. Stop eerst om instellingen te wijzigen.
+   Tijdens ontvangst veranderen `←` / `→` de frequentie in stappen van 1 kHz;
+   `↑` / `↓` veranderen de RTL-SDR-gain in stappen van 1 dB. De RTL-SDR en
+   decoder starten daarbij opnieuw en zoeken daarna opnieuw DVB-T-lock.
+4. De video verschijnt via libVLC. **Externe speler** opent VLC op de aparte
+   UDP-uitgang, standaard `udp://@:10000`. Video ontbreken verhindert geen
+   ontvangst of externe TS-uitvoer. **Diagnose** toont procesmeldingen.
+
+Gain `Auto` gebruikt de automatische gain van `rtl_sdr`. Handmatige gain wordt
+door de tuner naar een ondersteunde waarde afgerond. De GUI valideert de
+RTL-samplerate en of de gekozen DVB-T-bandbreedte daarin past. Instellingen
+worden lokaal opgeslagen met QSettings; de ontvanger start nooit automatisch.
+Bij ontbrekende hardware of een gestopt proces stopt de hele ontvangstketen.
+Verouderde status en constellaties worden gewist; een oude lock blijft niet
+als actuele ontvangst staan.
 
 ## Praktijktests
 
@@ -31,7 +66,7 @@ De primaire use-case is:
 SDR ontvanger of IQ opname -> raw complex IQ -> rbdvbt_rx -> MPEG-TS -> ffplay/VLC
 ```
 
-De SDR-kant is bewust buiten het programma gehouden. Een tool zoals `rtl_sdr`,
+De SDR-kant blijft buiten de decoderbinary; de Qt6-interface start daarvoor `rtl_sdr`. Een tool zoals `rtl_sdr`,
 SoapySDR, GNU Radio, SDRangel, `hackrf_transfer` of een eigen captureprogramma
 kan IQ samples leveren; `rbdvbt_rx` verwacht die samples op `stdin`.
 
@@ -44,75 +79,92 @@ Belangrijke ontwerpkeuzes:
   geen onderdeel van de lock-keten.
 - De status kan periodiek als JSON worden geschreven voor monitoring in een
   tweede terminal.
-- Het programma is ontworpen als backend die later door een aparte UI of
-  orchestrator kan worden gestart en bewaakt. High-speed DVB-T hardwaredecode en
+- De decoder is een backend die door de Qt6-interface wordt gestart en bewaakt. High-speed DVB-T hardwaredecode en
   DVB-S/S2 horen daarbij in aparte backends, niet in deze reduced-bandwidth
   softwaredecoder.
 
 ## Installatie
 
-Benodigd:
+Benodigd voor de volledige interface:
 
-- CMake 3.16 of nieuwer
-- C compiler met C11 ondersteuning
-- C++ compiler met C++11 ondersteuning
-- `pkg-config`
-- FFTW3 single precision development package (`fftw3f`)
+- CMake 3.16+, C11-compiler en C++17-compiler voor Qt6 (helpers blijven C++11).
+- `pkg-config`, FFTW3 single precision en pthreads.
+- Qt6 Widgets, Network en Test (Test is alleen nodig met `BUILD_TESTING=ON`).
+- `rtl_sdr` en toegang tot de RTL-SDR USB-ontvanger.
+- Optioneel libVLC development-bestanden en VLC-plugins voor video/audio in
+  het venster; VLC als losse speler werkt ook zonder ingebouwde libVLC.
+- De broncheckout van `sdr-dvb-pipelines`, standaard in de naastliggende map.
 
-Build:
+Als die checkout nog ontbreekt, voer vanuit deze repository uit:
 
 ```sh
+git clone https://github.com/pe1itr/sdr-dvb-pipelines.git ../sdr-dvb-pipelines
+```
+
+Gevalideerde decoderrevisie voor deze ombouw:
+`0f9665321ae70f39e01c8ef84ebdef2b802f89bd`.
+CMake bouwt de aanwezige bronbestanden rechtstreeks; het downloadt of wijzigt
+niets in die checkout. Je hoeft de overige ontvangers of de GTK-interface
+van `sdr-dvb-pipelines` niet te bouwen. Voor reproduceerbare builds gebruik je
+een checkout van die revisie; latere wijzigingen daarin worden bij een
+volgende build meegenomen.
+
+Op Debian/Ubuntu zijn de GUI-afhankelijkheden bijvoorbeeld:
+
+```sh
+sudo apt install build-essential cmake pkg-config libfftw3-dev qt6-base-dev rtl-sdr libvlc-dev vlc
 cmake -S . -B build
 cmake --build build -j
+ctest --test-dir build --output-on-failure
+./build/rbdvbt_gui
 ```
 
-Op een Odroid/aarch64 Linux host kan dezelfde build via het hulpscript:
+Een andere locatie voor de gedeelde decoder:
 
 ```sh
-tools-pi6ehv/build_odroid_arm64.sh
+cmake -S . -B build -DRBDVBT_DECODER_ROOT=/pad/naar/sdr-dvb-pipelines/components/dvbt
 ```
 
-Als de basispakketten nog ontbreken op Debian/Ubuntu:
+Alleen de decoder en commandlinehulpmiddelen bouwen, zonder Qt6:
 
 ```sh
-INSTALL_DEPS=1 tools-pi6ehv/build_odroid_arm64.sh
+cmake -S . -B build-headless -DRBDVBT_BUILD_GUI=OFF
+cmake --build build-headless -j
 ```
 
-Gebruik `WITH_X11=1` wanneer ook de optionele X11 GUI headers moeten worden
-geinstalleerd.
+De Odroid-build (`tools-pi6ehv/build_odroid_arm64.sh`) kiest deze headlessmodus.
+De decodercheckout blijft ook daar nodig. Met `INSTALL_DEPS=1` installeert
+het script de backendafhankelijkheden op Debian/Ubuntu.
+
+Video in het venster gebruikt libVLC op Windows of Linux/X11. Op een
+Wayland-desktop kan de GUI via XWayland draaien:
+
+```sh
+QT_QPA_PLATFORM=xcb ./build/rbdvbt_gui
+```
+
+Bij native Wayland of een build zonder libVLC gebruik je **Externe speler**.
+De decoder schrijft beide TS-kopieën onafhankelijk; het sluiten van een losse
+speler stopt de ontvangst niet. Spectrum en constellatie gebruiken een lokale,
+automatisch toegewezen UDP-poort. De ingebouwde video krijgt eveneens een
+eigen poort; alleen de externe poort is configureerbaar en standaard 10000.
 
 Belangrijkste binaries:
 
 ```text
-build/rbdvbt_rx             DVB-T receiver
-build/rbdvbt_status_watch   terminal monitor voor status JSON
-build/dvbt_fec_snr_plot     hulpprogramma voor performancegrafieken
-build/iq_replay_rate        speelt een IQ-bestand realtime naar stdout af
-build/portsdown_iq_dump     maakt een synthetisch DVB-T IQ-bestand, alleen wanneer other_parties/portsdown4 aanwezig is
-build/iq_airscatter_channel past een aircraft-scatter kanaal toe op s16 IQ
+build/rbdvbt_gui            Qt6 RTL-SDR interface
+build/rbdvbt_rx             decoder uit sdr-dvb-pipelines
+build/rbdvbt_status_watch   terminalmonitor voor status JSON
+build/iq_replay_rate        IQ-bestand realtime naar stdout
+build/dvbt_fec_snr_plot     performancegrafieken
+build/portsdown_iq_dump     synthetisch DVB-T IQ (optionele Portsdown-bron nodig)
+build/iq_airscatter_channel aircraft-scattermodel voor s16 IQ
 ```
 
-## Windows GUI launcher
-
-Op Windows kan optioneel `rbdvbt_gui.exe` worden gebouwd. Dit is een Qt 6
-launcher die `rtl_sdr.exe`, `rbdvbt_rx.exe` en VLC direct start, de IQ- en
-transportstream-pijpen zonder shell verbindt, VLC in het hoofdvenster embedded
-toont en diagnose-informatie naar het clipboard kan kopieren.
-De embedded VLC gebruikt intern UDP-poort 10002; tegelijk stuurt de GUI een
-tweede MPEG-TS kopie naar de configureerbare externe player-poort, standaard
-10000 voor een losse VLC met `udp://@:10000`.
-
-De Windows GUI is in dit project een ondersteunende launcher, geen algemene
-orchestrator. Het doel is Windows-gebruikers en meewerkende zendamateurs een
-eenvoudige testomgeving te geven zonder batchscripts of commandline-pijpen,
-zodat zij makkelijker praktijksignalen kunnen testen en feedback kunnen geven.
-Een eventuele knop om diagnosegegevens naar een support-API te sturen hoort bij
-deze GUI-laag. Zo'n upload moet handmatig door de gebruiker worden gestart en
-standaard beperkt blijven tot logs, status JSON, versies en instellingen.
-
-De GUI target bestaat alleen onder `WIN32` en verandert de normale Linux build
-van `rbdvbt_rx` niet. Zie `README_WINDOWS_GUI.txt` voor build-, packaging- en
-gebruikersinstructies.
+Dezelfde Qt6-interface is bedoeld voor Linux en Windows; zie
+`README_WINDOWS_GUI.txt` voor de Windows-build en runtimebestanden. Deze
+ombouw is op Linux gebouwd en getest; een nieuwe Windows-build en live
+RTL-SDR-praktijktest moeten nog op de betreffende systemen worden uitgevoerd.
 
 ## Basisgebruik
 
@@ -374,7 +426,7 @@ De losse webpagina `tools-pi6ehv/dvbt-rx-status.html` leest die JSON via
 `dvb/dvbt-rx-status.json`. Plaats de pagina op de webroot van de Odroid,
 bijvoorbeeld als `/var/www/html/dvbt-rx-status.html`.
 
-### GUI
+### Decoderdiagnostiek via X11
 
 Met `--gui` toont de ontvanger live X11-vensters voor de belangrijkste
 ontvangstinformatie: QPSK-constellatie, service/status en het spectrum van de
@@ -473,8 +525,7 @@ lagere netto bitrate.
 
 Gebruik `--sr 35k` (ook `35ks` of `35000`) voor een nominale DVB-T
 bandbreedte van 35 kHz, volgens dezelfde `--sr`-conventie als de andere modes.
-Vanaf Windows-versie 0.1.5 is `35k` ook te kiezen in de GUI bij
-`DVB-T symbol rate`.
+`35k` is ook in de GUI te kiezen bij `Bandbreedte`.
 Met `--dvbt-ir 1` is de interne IQ-samplerate `35000 * 8/7 = 40000` Hz.
 `--sample-rate` blijft de werkelijke samplerate van de IQ-bron; met
 `--resample-to-dvbt-rate` rekent de ontvanger die om naar 40.000 Hz.
@@ -730,11 +781,9 @@ reduced-bandwidth DVB-T ontvanger.
 
 ## Licentie
 
-Deze software mag worden gebruikt, aangepast en verspreid, ook in afgeleide
-projecten, mits de oorspronkelijke auteur duidelijk wordt vermeld:
-
-```text
-Rob Hardenberg / PE1ITR
-```
-
-Zie [LICENSE](LICENSE) voor de volledige voorwaarden.
+Auteur: **Rob Hardenberg / PE1ITR**.
+De actuele decoder uit `sdr-dvb-pipelines` valt onder **GPL-3.0-only**;
+zie `licenses/DECODER-GPL-3.0.txt` en de LICENSE in de gebruikte component.
+De GUI en oorspronkelijke hulpmiddelen in deze repository behouden de
+attributielicentie in [LICENSE](LICENSE). Zie [NOTICE](NOTICE) voor de
+bronvermelding en voorwaarden voor distributie van de decoder.

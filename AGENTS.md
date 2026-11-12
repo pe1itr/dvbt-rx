@@ -1,13 +1,13 @@
 # Agent Instructions
 
-This repository contains `rbdvbt_rx`, a reduced-bandwidth DVB-T receiver for
-amateur DATV experiments. Keep changes practical and close to the existing C
-and CMake style.
+This repository contains the Qt6 RTL-SDR interface and builds `rbdvbt_rx`
+from the sole decoder source in `sdr-dvb-pipelines/components/dvbt`.
+Keep changes practical and close to the existing C/C++ and CMake style.
 
 ## Project Shape
 
-- Main receiver code lives in `src/` and public/internal headers live in
-  `include/`.
+- GUI code lives in `gui/`. Decoder sources and headers live in the external
+  component selected by `RBDVBT_DECODER_ROOT`; do not create a local decoder fork.
 - Small helper programs live in `tools/`.
 - User-facing documentation is `README.md`; implementation notes and pipeline
   design live in `ARCHITECTURE.md`.
@@ -31,13 +31,17 @@ The project expects:
 
 - CMake 3.16 or newer
 - C compiler with C11 support
-- C++ compiler with C++11 support
+- C++ compiler with C++17 support for Qt6 (existing helpers remain C++11)
 - `pkg-config`
 - FFTW3 single precision development package (`fftw3f`)
 - Optional X11 development headers/libraries for GUI support
+- Qt6 Widgets/Network/Test for the interface and tests; optional libVLC for video
+- A checkout of `sdr-dvb-pipelines` next to this repository (or an explicit
+  `RBDVBT_DECODER_ROOT`). No network fetch occurs during configuration.
 
-There is no dedicated test suite at the time of writing. For code changes,
-at least run the CMake build when dependencies are available. For receiver
+Run `ctest --test-dir build --output-on-failure` for GUI/process tests and the
+available upstream decoder tests. Tests use localhost UDP but no SDR hardware.
+For code changes, at least run the CMake build when dependencies are available. For receiver
 behavior changes, prefer a small reproducible command with `--max-samples` or
 an existing IQ capture if the user provides one.
 
@@ -59,11 +63,12 @@ an existing IQ capture if the user provides one.
 
 - Follow the surrounding C style. Prefer small, explicit functions over broad
   abstractions.
-- Keep C at C11 and C++ at C++11 unless the build configuration is intentionally
-  changed.
+- Keep C at C11 and the helper tools at C++11. The Qt6 interface intentionally
+  uses C++17 through its CMake target feature.
 - Avoid unrelated formatting churn, especially in DSP-heavy code where small
   changes can obscure behavior.
-- Put shared declarations in `include/` and keep file-local helpers `static`.
+- Keep GUI declarations in `gui/`; decoder declarations belong to the shared
+  component. Keep file-local C helpers `static`.
 - Preserve clean separation between data output, diagnostics, and monitoring.
 
 ## Documentation

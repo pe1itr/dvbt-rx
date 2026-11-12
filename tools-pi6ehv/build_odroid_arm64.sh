@@ -56,7 +56,7 @@ if [ "${clean}" = "1" ]; then
     cmake --build "${build_dir}" --target clean 2>/dev/null || true
 fi
 
-cmake -S "${repo_dir}" -B "${build_dir}" -DCMAKE_BUILD_TYPE="${build_type}"
+cmake -S "${repo_dir}" -B "${build_dir}" -DCMAKE_BUILD_TYPE="${build_type}" -DRBDVBT_BUILD_GUI=OFF
 cmake --build "${build_dir}" -j "${jobs}"
 
 printf "\nBuilt receiver:\n  %s/rbdvbt_rx\n" "${build_dir}"
