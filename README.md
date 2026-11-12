@@ -15,8 +15,9 @@ Er is geen tweede decoderimplementatie of automatische terugval naar de oude
 broncode. Decoderontwikkeling blijft in `sdr-dvb-pipelines`.
 
 De GUI ondersteunt uitsluitend RTL-SDR en DVB-T 2K QPSK. De nominale
-bandbreedtes zijn 35, 40, 125, 150, 250, 333 en 500 kHz; 35/40/125 kHz blijven
-experimenteel. IQ-bestanden blijven bruikbaar via de decoder-CLI voor tests.
+bandbreedtes zijn 35, 40, 125, 150, 250, 333 en 500 kHz. Ook de modes
+35/40/125 kHz zijn uitgebreid getest en standaard onderdeel van `linrad_dvb`.
+IQ-bestanden blijven bruikbaar via de decoder-CLI voor tests.
 
 ## Snel starten
 
@@ -59,6 +60,13 @@ moment. De software is daarnaast getest op een ARM64 Odroid N2 systeem zoals
 gebruikt bij de PI6EHV WebSDR en ATV-repeater, en met een `2324 MHz` link naar
 de PI6EHV ATV-repeater zijn stabiele streams gerealiseerd voor `250k` en
 `333k` met FEC `2/3`.
+
+Ook de smalle DVB-T-modes zijn in de praktijk getest. Tijdens de
+[40 kHz DVB-T-proef vanuit Luxemburg op 4 november 2026](https://pe1itr.com/144mhz/144mhz-40khz-dvb-t-experiment-luxembourg-2026.htm)
+ontvingen PA0T, PA3BYV en PE1BBI de uitzending van LX/PE1ITR op 144,600 MHz
+met RTL-SDR en de Windows-software uit **deze repository**. Er werd beeld
+gedecodeerd over afstanden tot 377 km, met QPSK, FEC `1/2` en GI `1/32`.
+`linrad_dvb` was tijdens die proef nog niet beschikbaar.
 
 ![ffplay met ontvangen DVB-T transportstream](plots/screenshot_ffplay.png)
 
@@ -563,7 +571,7 @@ Linux/X11 vensterinterface.
 
 | Parameter | Keuzes | Betekenis |
 |---|---|---|
-| `--sr` | `150k`, `250k`, `333k`, `500k`, of `150000`, `250000`, `333000`, `333333`, `500000` | DVB-T symbolrate preset of numerieke Hz-waarde. `35k`/`35ks`/`35000`, `40k`/`40ks`/`40000` en `125k`/`125000` worden ook geaccepteerd als experimentele presets; `333000` en `333333` kiezen de 333k mode. |
+| `--sr` | `35k`, `40k`, `125k`, `150k`, `250k`, `333k`, `500k` | Ondersteunde nominale DVB-T-bandbreedte. Numerieke Hz-waarden worden ook geaccepteerd, zoals `35000`, `40000` en `125000`; `35ks` en `40ks` zijn aliassen. `333000` en `333333` kiezen de 333k mode. |
 | `--gi` | `auto`, `1/8`, `1/16`, `1/32` | Guard interval. `auto` kiest via cyclic-prefix correlatie. |
 | `--fec` | `auto`, `1/2`, `2/3`, `3/4`, `5/6`, `7/8` | Inner FEC puncturing rate. `auto` kiest via Viterbi + outer TS score. |
 | `--dvbt-ir` | `1`, `2`, `4`, `8` | Interpolation/rate factor voor de DVB-T sample grid. |
@@ -623,7 +631,7 @@ lagere netto bitrate.
 | `250k` | Praktische middenweg voor aircraft-scatter tests. |
 | `150k` | Robuust wanneer het bruikbare moment kort is of fading dominant is. |
 
-### Experimentele 35 kHz bandbreedte
+### 35 kHz bandbreedte
 
 Gebruik `--sr 35k` (ook `35ks` of `35000`) voor een nominale DVB-T
 bandbreedte van 35 kHz, volgens dezelfde `--sr`-conventie als de andere modes.
@@ -646,10 +654,9 @@ Zender en ontvanger moeten dezelfde bandbreedte, FEC en guard gebruiken.
 Bij QPSK, FEC `1/2` en GI `1/32` is de netto TS-bitrate circa 26,4 kbit/s,
 inclusief de MPEG-TS-overhead. Een OFDM-symbool duurt dan 52,8 ms; een live
 frontendblok van 64 symbolen omvat circa 3,38 seconden signaal. Houd dus
-rekening met langere acquisitie- en buffertijden. Deze mode is experimenteel;
-ontvangst via RF moet nog worden beproefd.
+rekening met langere acquisitie- en buffertijden.
 
-### Experimentele 40 kHz bandbreedte
+### 40 kHz bandbreedte
 
 Gebruik `--sr 40k` (ook `40ks` of `40000`) voor een nominale DVB-T
 bandbreedte van 40 kHz. Vanaf Windows-versie 0.1.4 is `40k` ook te kiezen
@@ -672,8 +679,8 @@ Voor een s16-IQ-opname op 96.000 samples/s schrijft dit MPEG-TS naar een bestand
 Zender en ontvanger moeten dezelfde bandbreedte, FEC en guard gebruiken.
 Bij QPSK, FEC `1/2` en GI `1/32` is de netto TS-bitrate circa 30,2 kbit/s,
 inclusief de MPEG-TS-overhead. Een OFDM-symbool duurt dan 46,2 ms; een live
-frontendblok van 64 symbolen omvat circa 2,96 seconden signaal. Ook deze
-mode is experimenteel; ontvangst via RF moet nog worden beproefd.
+frontendblok van 64 symbolen omvat circa 2,96 seconden signaal. Deze mode
+is ook via RF beproefd; zie het Luxemburg-verslag onder Praktijktests.
 
 ### FEC
 

@@ -120,7 +120,7 @@ void ReceiverWindow::buildUi()
     gain_->setSuffix(" dB");
     gain_->setToolTip("↑ / ↓: SDR-gain 1 dB hoger of lager; ontvangst heracquiret.");
     bandwidth_ = choices({"35k", "40k", "125k", "150k", "250k", "333k", "500k"}, "bandwidth");
-    bandwidth_->setToolTip("Nominale DVB-T-kanaalbandbreedte (decoderoptie --sr). 35/40/125 kHz zijn experimenteel.");
+    bandwidth_->setToolTip("Nominale DVB-T-kanaalbandbreedte (decoderoptie --sr). Alle getoonde modes worden ondersteund.");
     fec_ = choices({"1/2", "2/3", "3/4", "5/6", "7/8", "auto"}, "fec");
     guard_ = choices({"1/32", "1/16", "1/8", "auto"}, "guard");
     const QList<QPair<QString, QWidget *>> fields = {

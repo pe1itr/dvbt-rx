@@ -28,9 +28,11 @@ Deze Windows-build gebruikt **Externe speler** voor video/audio. Installeer
 VLC apart en kies zo nodig `vlc.exe` bij Instellingen. De instellingen van de
 oude 0.1.x-launcher worden niet automatisch overgenomen.
 
-De GUI ondersteunt 35, 40, 125, 150, 250, 333 en 500 kHz. De modes
-35/40/125 kHz blijven experimenteel. Stel samplerate, bandbreedte, FEC en guard
-in overeenkomstig de IQ-bron en zender.
+De GUI ondersteunt 35, 40, 125, 150, 250, 333 en 500 kHz. Ook 35/40/125 kHz
+zijn uitgebreid geteste modes en standaard onderdeel van `linrad_dvb`.
+Het [Luxemburg-verslag](https://pe1itr.com/144mhz/144mhz-40khz-dvb-t-experiment-luxembourg-2026.htm)
+beschrijft 40 kHz-ontvangst met de Windows-software uit deze repository.
+Stel samplerate, bandbreedte, FEC en guard in overeenkomstig de IQ-bron en zender.
 
 ## Broncode en licenties
 
