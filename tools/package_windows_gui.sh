@@ -42,11 +42,8 @@ if [ -d "${vendor_rtlsdr_dir}" ]; then
         install -m 644 "${vendor_rtlsdr_dir}/SOURCE.txt" "${package_dir}/RTLSDR_SOURCE.txt"
     else
         {
-            echo "Source: https://downloads.osmocom.org/binaries/windows/rtl-sdr/"
-            echo "Package: rtl-sdr-64bit-20260517.zip"
-            echo "Package URL: https://downloads.osmocom.org/binaries/windows/rtl-sdr/rtl-sdr-64bit-20260517.zip"
-            echo "Architecture: 64-bit Windows"
-            echo "Files copied into release package root when present: rtl_sdr.exe, librtlsdr.dll, rtlsdr.dll, libusb-1.0.dll"
+            echo "RTL-SDR runtime for 64-bit Windows."
+            echo "See SOURCE.txt and the accompanying source archive for the exact source and build details."
         } > "${package_dir}/RTLSDR_SOURCE.txt"
     fi
     rm -f "${package_dir}/ADD_RTLSDR_FILES_HERE.txt"
