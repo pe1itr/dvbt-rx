@@ -10,7 +10,7 @@ Clone de repository op de Odroid en bouw de receiver:
 ```sh
 git clone <repo-url> dvbt-rx
 cd dvbt-rx
-INSTALL_DEPS=1 tools-pi6ehv/build_odroid_arm64.sh
+INSTALL_DEPS=1 RUN_TESTS=1 tools-pi6ehv/build_odroid_arm64.sh
 ```
 
 Voor een normale rebuild zonder package-installatie:
@@ -18,6 +18,33 @@ Voor een normale rebuild zonder package-installatie:
 ```sh
 tools-pi6ehv/build_odroid_arm64.sh
 ```
+
+De build kiest `Release`, twee parallelle taken en geen Qt6/X11. Op ARM64
+wordt de decoder afgestemd op de N2 A73/A53-cores met `-march=armv8-a` en
+`-mtune=cortex-a73.cortex-a53`, gelijk aan `linrad_dvb`. Hiervoor is een
+64-bit OS en een GCC-versie met deze tuning nodig; CMake controleert dat.
+Op x86 kiest het script automatisch `generic`. `TARGET_CPU=generic` geeft
+ook op ARM64 een build zonder N2-afstemming.
+
+Opties: `JOBS=N`, `WITH_X11=1` voor decoderdiagnostiek en `RUN_TESTS=1` voor
+CTest na de build. Python 3 hoort bij de testafhankelijkheden. De tests
+gebruiken geen SDR-hardware. Op ARM64 wordt ook de upstream NEON-kerneltest
+gebouwd en uitgevoerd; streamingtests draaien met SIMD, geforceerd scalar en
+een build zonder expliciete SIMD. NEON zelf zat al in de gedeelde decoder.
+
+Voor een ontvangstvergelijking:
+
+```sh
+LOGLEVEL=info tools-pi6ehv/dvbt_rx_pi6ehv.sh
+# Stop de eerste run voordat je met dezelfde instellingen scalar vergelijkt:
+LINRAD_DVBT_VITERBI_SCALAR=1 LOGLEVEL=info tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+Zoek naar `kernel=neon-float` respectievelijk `kernel=scalar-float`. Vergelijk
+ook `iq_drops`, `fifo_drops`, TS/RS-resultaten en de totale CPU-belasting met
+SRT actief. Meer threads zijn geen garantie op snellere ontvangst. De native
+N2-throughput en 1080p-encodingcapaciteit moeten op de doelcomputer worden
+gemeten; de desktoptests bewijzen dat niet.
 
 ## Webstatus installeren
 
@@ -109,12 +136,17 @@ De instellingen corresponderen met `[srt]` in `linrad-dvb.ini`:
 | `SRT_VIDEO_THREADS` | `video_threads` | `0` (auto) |
 | `SRT_FILTER_THREADS` | `filter_threads` | `0` (auto) |
 
-ODROID-N2-startpunt, zoals bij `linrad_dvb`:
+Met `SRT_PROFILE=auto` (default) wordt een ODROID-N2/N2+ via het boardmodel
+herkend en automatisch op `ultrafast` / drie videothreads / één filterthread
+ingesteld, gelijk aan het upstream N2-profiel. Expliciet kiezen:
 
 ```sh
-SRT_X264_PRESET=ultrafast SRT_VIDEO_THREADS=3 SRT_FILTER_THREADS=1 \
-tools-pi6ehv/dvbt_rx_pi6ehv.sh
+SRT_PROFILE=odroid-n2 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
+
+`SRT_PROFILE=generic` kiest de algemene defaults uit de tabel. Expliciete
+`SRT_X264_PRESET`, `SRT_VIDEO_THREADS` en `SRT_FILTER_THREADS` gaan voor het
+profiel. Threads gelden per pool, niet als totaal CPU-budget.
 
 De resolutie is vast 1920×1080. De oude `FFMPEG_SCALE`, `FFMPEG_MAP`,
 `FFMPEG_AUDIO` en `FFMPEG_VIDEO_*`-opties zijn vervangen door deze route en

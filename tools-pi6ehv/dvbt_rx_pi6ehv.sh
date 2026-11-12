@@ -30,13 +30,28 @@ rxlog="${RXLOG:-${log_dir}/rx_${session}.log}"
 ffmpeglog="${FFMPEGLOG:-}"
 ffmpeglog_help="${FFMPEGLOG:-temporary run log}"
 srt_url="${SRT_URL:-srt://44.137.26.85:4001?mode=caller&latency=500000}"
+srt_profile="${SRT_PROFILE:-auto}"
+if [ "${srt_profile}" = "auto" ]; then
+    srt_profile=generic
+    if [ -r /proc/device-tree/model ]; then
+        board_model="$(tr -d '\0' < /proc/device-tree/model)"
+        case "${board_model,,}" in
+            *odroid-n2*) srt_profile=odroid-n2 ;;
+        esac
+    fi
+fi
+case "${srt_profile}" in
+    generic) default_preset=veryfast; default_video_threads=0; default_filter_threads=0 ;;
+    odroid-n2) default_preset=ultrafast; default_video_threads=3; default_filter_threads=1 ;;
+    *) printf "Unknown SRT_PROFILE: %s\n" "${srt_profile}" >&2; exit 2 ;;
+esac
 srt_loss_ms="${SRT_LOSS_TIMEOUT_MS:-2000}"
 srt_retry_ms="${SRT_RETRY_INTERVAL_MS:-2000}"
 srt_fps="${SRT_FPS:-25}"
 srt_bitrate="${SRT_VIDEO_BITRATE_KBPS:-4000}"
-srt_preset="${SRT_X264_PRESET:-veryfast}"
-srt_video_threads="${SRT_VIDEO_THREADS:-0}"
-srt_filter_threads="${SRT_FILTER_THREADS:-0}"
+srt_preset="${SRT_X264_PRESET:-${default_preset}}"
+srt_video_threads="${SRT_VIDEO_THREADS:-${default_video_threads}}"
+srt_filter_threads="${SRT_FILTER_THREADS:-${default_filter_threads}}"
 video_start="${WAIT_VIDEO_START:-1}"
 enable_gui="${GUI:-0}"
 udp_ts="${UDP_TS:-${UDP_OUT:-127.0.0.1:10000}}"
@@ -74,6 +89,7 @@ Environment:
   RXLOG           receiver log path. Default: ${rxlog}
   FFMPEGLOG       ffmpeg log path. Default: ${ffmpeglog_help}
   RBDVBT_SRT      SRT supervisor path. Default: ${srt_worker}
+  SRT_PROFILE     auto, generic or odroid-n2; auto detects the N2 board model
   SRT_LOSS_TIMEOUT_MS disconnect after no video payload. Default: ${srt_loss_ms}
   SRT_RETRY_INTERVAL_MS retry output while video is present. Default: ${srt_retry_ms}
   SRT_FPS         1920x1080 output frame rate. Default: ${srt_fps}
@@ -250,6 +266,7 @@ printf "Starting RTL-SDR receiver to SRT\n" >&2
 printf "  RF:        %s Hz, sample rate %s, gain %s, device %s\n" "${frequency}" "${sample_rate}" "${gain}" "${device}" >&2
 printf "  DVB-T:     SR %s, GI %s, FEC %s\n" "${symbol_rate}" "${gi}" "${fec}" >&2
 printf "  SRT:       %s\n" "${srt_url}" >&2
+printf "  SRT profile: %s\n" "${srt_profile}" >&2
 if [ -n "${rx_udp_ts}" ]; then
     printf "  TS path:   receiver UDP %s -> SRT supervisor\n" "${rx_udp_ts}" >&2
 else

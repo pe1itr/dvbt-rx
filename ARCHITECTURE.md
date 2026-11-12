@@ -71,6 +71,81 @@ De interface beëindigt dan de RTL- en decoderprocessen asynchroon, start ze met
 de nieuwe afstemming opnieuw en laat VLC en de UDP-poorten actief. Zo blijft de
 Qt-eventloop reageren terwijl de DVB-T-decoder de lock opnieuw opbouwt.
 
+## Decodercontrole en ODROID-N2-build (2026-11-12)
+
+De standalone `main.c` en `src/dvbt_backend.c` van `linrad_dvb` roepen dezelfde
+configuratieparser en `rbdvbt_run_receiver` aan. `LINRAD_EMBEDDED_DVBT` voegt
+alleen threadnamen en monitoring toe en vervangt de decoder-X11-weergave. De
+kern voor resampling, CP/pilotacquisitie, equalizing, demapping, deinterleaving,
+Viterbi, Reed-Solomon en TS-gating is gedeeld. FFT/pilotcache, hergebruik van
+payloadrotaties, vaste carrier-role-tabellen en ARM64 NEON-Viterbi waren al
+geïntegreerd. De NEON-kernel wordt automatisch geselecteerd op AArch64.
+
+De Qt-launcher gaf nog geen `--afc` mee; die gebruikt nu dezelfde live-AFC als
+de headless launcher en de standaard `linrad_dvb`-configuratie. De PI6EHV-route
+houdt zijn bestaande blokgrootte van 128 symbolen. De upstream voorbeeldconfig
+gebruikt 64; `LIVE_SYMBOLS=64 PROBE_SYMBOLS=64` kiest datzelfde gedrag. De Qt GUI
+gebruikt 64, behalve 128 bij 150 kHz. Dit zijn aansturingsinstellingen van
+dezelfde decoder en geen aparte algoritmen.
+
+Bij de controle is een gedeelde fout in de IQ-discontinuïteitsdetectie
+gecorrigeerd. De oude ringbuffer-read rapporteerde alleen overruns die tijdens
+die read optraden. Verliezen terwijl de OFDM-thread een vorig blok verwerkte
+werden wel cumulatief geteld maar konden de volgende discontinuïteitsmelding
+missen. Elke read rapporteert nu het verschil sinds de vorige read, onder
+dezelfde mutex. Een regressietest controleert verliezen tussen reads,
+wraparound, een input groter dan de ring en het eenmalig rapporteren van
+verliezen. De correctie staat in de gedeelde component en geldt voor beide
+hosts. Bufferomvang, DSP-formules, zoekbereik en FEC-keuzes zijn gelijk gebleven.
+
+CMake biedt `RBDVBT_TARGET_CPU=generic|odroid-n2`. Het N2-profiel gebruikt
+`-march=armv8-a -mtune=cortex-a73.cortex-a53`, hetzelfde als de upstream native
+N2-build, en controleert architectuur en compilerondersteuning. De CPU-opties
+gelden voor decoder, SRT-bewaker en decodertests. `RBDVBT_WITH_X11=OFF` schakelt
+ook met geïnstalleerde X11-headers de decoder-X11-code uit. De N2-launcher bouwt
+`Release`, zonder Qt6/X11 en met standaard twee parallelle buildtaken, om
+het geheugenverbruik van gelijktijdige decodercompilaties te beperken.
+Er zijn geen fast-math, alternatieve filtercoëfficiënten, threadaffiniteit of
+extra FEC-workers toegevoegd.
+
+De SRT-launcher herkent het N2-boardmodel en kiest daar het bestaande upstream
+encoderprofiel `ultrafast`, drie video- en één filterthread. Expliciete
+instellingen blijven leidend; op andere computers blijven de algemene defaults
+gelden. De videoresolutie blijft 1920×1080. Dit begrenst threadpools; het
+bewijst geen realtime 1080p-encodingcapaciteit op de N2.
+
+Controle op de ontwikkelcomputer (x86_64):
+
+- Native desktop-build en een aparte headless-build zonder Qt/X11.
+- Streaming-FEC voor alle ondersteunde rates, automatische SIMD, geforceerd
+  scalar en een aparte build zonder expliciete SIMD; frontend- en PSI-tests.
+- Vier onafhankelijke live-rate hostvergelijkingen op bestaande tienseconden-IQ:
+  250 kHz/FEC 1/2 en 333 kHz/FEC 2/3, elk met blokken van 64 en 128 symbolen.
+  De actuele upstream backend is hiervoor zonder GTK met dezelfde bronbestanden
+  gecompileerd. Bij 250 kHz leverden beide hosts 227.668 identieke TS-bytes;
+  bij 333 kHz 410.592. Decoder-CPU lag per tien seconden tussen 1,38–1,40 s
+  respectievelijk 1,64–1,71 s. Dit zijn korte functionele vergelijkingen;
+  er is geen meetbare versnelling tussen de hosts aangetoond.
+- Na de IQ-correctie is 333 kHz/128 symbolen met beide opnieuw gebouwde hosts
+  herhaald: opnieuw dezelfde 410.592 TS-bytes, ook gelijk aan vóór de correctie.
+- Een afzonderlijke IQ-ringsimulatie reproduceerde vóór de correctie vier
+  verloren samples met nul gerapporteerde verliezen; na de correctie vier.
+- SRT-loopback met echte 1080p H.264/AAC, aspectratio, verdwijnen/terugkeer van
+  video en volledige procesopruiming; N2-profiel in de launcher gecontroleerd.
+- De gedeelde NEON-test compileert naar een ARMv8-A-object. CMake voegt die test
+  op native ARM64 toe; emulatie en een volledige native N2-build zijn tijdens
+  deze controle niet uitgevoerd. De eerder upstream vastgelegde NEON-emulatietest
+  blijft een afzonderlijke historische controle.
+
+Verdere optimalisatiekandidaten zijn de per-sample wrapberekening in de IQ-ring,
+herhaald aanmaken van sommige FFTW-plannen en tijdelijke buffers/kopieën.
+Die code is gedeeld en hoort daar, na profilering op de N2, verder aangepast
+te worden. De bestaande scratch-buffer- en trigonometrie-experimenten zijn
+geen productiepad. De huidige controle rechtvaardigt geen gewijzigde
+filterkwaliteit, kleinere acquisitiezoekruimte of gevoeligheidsclaim. Een
+native duurtest met tegelijk actieve SRT moet CPU, temperatuur, IQ-overruns,
+FEC-queuedrops en TS/RS-resultaten vastleggen.
+
 ## Headless SRT-uitgang
 
 De PI6EHV-launcher houdt RTL-SDR en `rbdvbt_rx` actief tijdens ontvangstverlies:

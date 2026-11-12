@@ -93,7 +93,7 @@ Benodigd voor de volledige interface:
   (`RBDVBT_BUILD_SRT=ON`, standaard aan). FFmpeg met libsrt en libx264 is
   nodig bij gebruik van SRT. Zonder SRT bouwen: `-DRBDVBT_BUILD_SRT=OFF`.
 - Qt6 Widgets, Network en Test (Test is alleen nodig met `BUILD_TESTING=ON`).
-- Python 3 voor de SRT-integratietests met `BUILD_TESTING=ON`.
+- Python 3 voor de Linux buildscript- en SRT-integratietests met `BUILD_TESTING=ON`.
 - `rtl_sdr` en toegang tot de RTL-SDR USB-ontvanger.
 - Optioneel libVLC development-bestanden en VLC-plugins voor video/audio in
   het venster; VLC als losse speler werkt ook zonder ingebouwde libVLC.
@@ -138,9 +138,44 @@ cmake -S . -B build-headless -DRBDVBT_BUILD_GUI=OFF
 cmake --build build-headless -j
 ```
 
-De Odroid-build (`tools-pi6ehv/build_odroid_arm64.sh`) kiest deze headlessmodus.
-De decodercheckout blijft ook daar nodig. Met `INSTALL_DEPS=1` installeert
-het script de backendafhankelijkheden op Debian/Ubuntu.
+De Odroid-build (`tools-pi6ehv/build_odroid_arm64.sh`) kiest headless zonder
+Qt6 en X11, `Release` en standaard twee parallelle buildtaken. Op ARM64 kiest
+het script `RBDVBT_TARGET_CPU=odroid-n2`: `-march=armv8-a` met
+`-mtune=cortex-a73.cortex-a53`, gelijk aan de upstream N2-build. Deze
+[GCC-afstemming](https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html)
+past bij de A73/A53-combinatie en gebruikt de ARMv8-A-instructieset op beide
+soorten cores. Er is geen `fast-math` toegevoegd. CMake controleert of target
+en compiler het profiel ondersteunen. De gewone CMake-build blijft `generic`.
+
+Native op de ODROID-N2/N2+ met een 64-bit OS en GCC:
+
+```sh
+INSTALL_DEPS=1 RUN_TESTS=1 tools-pi6ehv/build_odroid_arm64.sh
+```
+
+Voor volgende builds zijn `INSTALL_DEPS=1` en package-installatie niet nodig.
+De decodercheckout blijft wel nodig. `TARGET_CPU=generic` schakelt de
+N2-afstemming uit; `WITH_X11=1` bouwt de optionele decoderdiagnostiek mee.
+Rechtstreeks met CMake:
+
+```sh
+cmake -S . -B build-n2 -DCMAKE_BUILD_TYPE=Release \
+  -DRBDVBT_BUILD_GUI=OFF -DRBDVBT_WITH_X11=OFF \
+  -DRBDVBT_TARGET_CPU=odroid-n2
+cmake --build build-n2 -j2
+ctest --test-dir build-n2 --output-on-failure
+```
+
+De gedeelde decoder bevat al automatische NEON-Viterbi op ARM64, FFT-hergebruik
+bij pilotacquisitie en vooraf berekende draaggolftabellen. Met `RUN_TESTS=1`
+wordt op ARM64 ook de upstream NEON-test uitgevoerd: 100.000 gevallen met
+6,4 miljoen exacte metricvergelijkingen, survivorbits en best-state-keuzes. Streaming-FEC wordt
+met automatische SIMD, geforceerd scalar en zonder expliciete SIMD-kernels
+getest. Voor vergelijking tijdens ontvangst kiest
+`LINRAD_DVBT_VITERBI_SCALAR=1` de scalar-route; laat die variabele normaal weg.
+Met `LOGLEVEL=info` is `kernel=neon-float` zichtbaar wanneer Viterbi actief wordt.
+Een native N2-duurtest blijft nodig om de totale belasting inclusief
+1080p-encoding, temperatuur en eventuele IQ/FEC-verliezen te beoordelen.
 
 Video in het venster gebruikt libVLC op Windows of Linux/X11. Op een
 Wayland-desktop kan de GUI via XWayland draaien:
@@ -440,12 +475,18 @@ threads zijn instelbaar:
 | `SRT_VIDEO_THREADS` | `0` | Threads per decoder/encoderpool, 0=automatisch |
 | `SRT_FILTER_THREADS` | `0` | Filterthreads, 0=automatisch |
 
-Hetzelfde startpunt als in de `linrad_dvb`-configuratie voor een ODROID-N2:
+Het script herkent een ODROID-N2/N2+ via `/proc/device-tree/model` en kiest
+dan automatisch het upstream N2-startpunt: `ultrafast`, drie videothreads en
+één filterthread. Op andere machines blijven `veryfast` en automatische
+threadaantallen gelden. Je kunt de profielkeuze expliciet maken:
 
 ```sh
-SRT_X264_PRESET=ultrafast SRT_VIDEO_THREADS=3 SRT_FILTER_THREADS=1 \
-tools-pi6ehv/dvbt_rx_pi6ehv.sh
+SRT_PROFILE=odroid-n2 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
+
+`SRT_PROFILE=generic` schakelt de N2-voorkeuren uit. Expliciete
+`SRT_X264_PRESET`, `SRT_VIDEO_THREADS` en `SRT_FILTER_THREADS` gaan voor het
+profiel. Threadaantallen gelden per decoder/encoder/filterpool, niet als totaal.
 
 De vroegere `FFMPEG_SCALE`, `FFMPEG_AUDIO`, `FFMPEG_MAP` en
 `FFMPEG_VIDEO_*`-instellingen zijn vervangen door bovenstaande vaste

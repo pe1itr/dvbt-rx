@@ -97,6 +97,7 @@ private slots:
         QVERIFY(args("rtl-args").contains("-d\n0\n-f\n436000000"));
         QVERIFY(args("decoder-args").contains("--input-format\nu8"));
         QVERIFY(args("decoder-args").contains("--probe-constellation"));
+        QVERIFY(args("decoder-args").contains("--afc"));
         QVERIFY(args("decoder-args").contains("--sr\n333k"));
         QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() + "/receiver-test.png"));
         auto retune = [&](Qt::Key key, const QString &expectedArgs) {

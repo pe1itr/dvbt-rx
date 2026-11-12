@@ -511,7 +511,7 @@ void ReceiverWindow::start()
     const QString block = bandwidthHz == 150000 ? "128" : "64";
     const QStringList decoderArgs = {
         "--stdin", "--input-format", "u8", "--sample-rate", QString::number(sampleRate_),
-        "--probe-constellation", "--resample-to-dvbt-rate", "--dvbt-ir", "1", "--live",
+        "--probe-constellation", "--resample-to-dvbt-rate", "--dvbt-ir", "1", "--live", "--afc",
         "--sr", bandwidth_->currentText(), "--fec", fec_->currentText(), "--gi", guard_->currentText(),
         "--live-symbols", block, "--probe-symbols", block, "--wait-video-start",
         "--udp-ts", QString("127.0.0.1:%1").arg(videoPort_),

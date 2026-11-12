@@ -1,5 +1,6 @@
 """Exercise the shared linrad SRT supervisor and this receiver's UDP adapter."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import socket
@@ -111,6 +112,7 @@ class ReceiverSrtTests(shared.SrtTests):
                        "LOG_DIR": str(root), "STATUS_JSON": str(root / "status.json"),
                        "FFMPEGLOG": str(root / "srt.log"), "UDP_TS": endpoint if transport == "udp" else "off",
                        "WATCHDOG_INTERVAL": "0.1", "SRT_LOSS_TIMEOUT_MS": "300",
+                       "SRT_PROFILE": "odroid-n2",
                        "LOCK_LOSS_TIMEOUT": "1", "DISPLAY": "", "WAYLAND_DISPLAY": ""}
                 log = (root / "launcher.log").open("w+")
                 self.addCleanup(log.close)
@@ -118,6 +120,10 @@ class ReceiverSrtTests(shared.SrtTests):
                 p = subprocess.Popen([launcher], env=env, stdout=subprocess.DEVNULL, stderr=log)
                 self.addCleanup(shared.stop, p)
                 shared.wait_for(lambda: len(self.calls()) > before)
+                shared.wait_for(lambda: (self.directory / "args").exists())
+                encoder_args = json.loads((self.directory / "args").read_text())
+                for option, value in (("-preset", "ultrafast"), ("-threads:v", "3"), ("-filter_threads", "1")):
+                    self.assertEqual(encoder_args[encoder_args.index(option) + 1], value)
                 first = self.calls()[-1]
                 rtl_pid = (root / "rtl-pid").read_text()
                 decoder_pid = (root / "decoder-pid").read_text()
