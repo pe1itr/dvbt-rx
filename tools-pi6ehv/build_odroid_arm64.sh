@@ -44,7 +44,7 @@ for arg in "$@"; do
 done
 
 if [ "${install_deps}" = "1" ]; then
-    packages="build-essential cmake pkg-config libfftw3-dev rtl-sdr ffmpeg"
+    packages="build-essential cmake pkg-config libfftw3-dev libglib2.0-dev rtl-sdr ffmpeg"
     if [ "${with_x11}" = "1" ]; then
         packages="${packages} libx11-dev"
     fi
@@ -56,7 +56,7 @@ if [ "${clean}" = "1" ]; then
     cmake --build "${build_dir}" --target clean 2>/dev/null || true
 fi
 
-cmake -S "${repo_dir}" -B "${build_dir}" -DCMAKE_BUILD_TYPE="${build_type}" -DRBDVBT_BUILD_GUI=OFF
+cmake -S "${repo_dir}" -B "${build_dir}" -DCMAKE_BUILD_TYPE="${build_type}" -DRBDVBT_BUILD_GUI=OFF -DRBDVBT_BUILD_SRT=ON
 cmake --build "${build_dir}" -j "${jobs}"
 
 printf "\nBuilt receiver:\n  %s/rbdvbt_rx\n" "${build_dir}"

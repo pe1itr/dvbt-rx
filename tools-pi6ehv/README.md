@@ -79,60 +79,59 @@ Voor een andere ffmpeg binary:
 FFMPEG=/pad/naar/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-Het startscript gebruikt standaard UDP poort `10000` als MPEG-TS transport van
-`rbdvbt_rx` naar ffmpeg. Daarmee wordt de stdout/FIFO-route vermeden; die kan
-bij beschadigde of nog niet complete H.264-startpakketten blijven hangen met
-meldingen zoals `non-existing PPS 0 referenced` en `no frame`.
-
-De standaard route is:
+Het startscript gebruikt dezelfde SRT-bewaker als `linrad_dvb`. De route is:
 
 ```text
-rbdvbt_rx --udp-ts 127.0.0.1:10000 -> ffmpeg udp://@:10000 -> SRT
+rbdvbt_rx --udp-ts 127.0.0.1:10000 -> rbdvbt_srt -> ffmpeg -> SRT
 ```
 
-Voor een andere interne UDP-bestemming:
+Zonder video blijft de ontvanger actief en is SRT uit. Videopayload start de
+SRT-caller; 2000 ms zonder nieuwe videopayload stopt alleen FFmpeg/SRT.
+Nieuwe ontvangst start de uitgang automatisch opnieuw. Uitgangsfouten worden
+elke 2000 ms opnieuw geprobeerd zolang er video binnenkomt. Er is hiervoor
+geen herstart van RTL-SDR of decoder nodig.
+
+De uitvoer is dezelfde als in `linrad_dvb`: 1920×1080p25 H.264 op
+4000 kbit/s, preset `veryfast`, optionele AAC-audio op 128 kbit/s,
+48 kHz stereo. Deïnterlacing, correcte beeldverhouding bij anamorfische
+bronnen, vierkante pixels en zwarte balken zijn inbegrepen.
+
+De instellingen corresponderen met `[srt]` in `linrad-dvb.ini`:
+
+| Environment | INI-sleutel | Default |
+|---|---|---|
+| `SRT_URL` | `url` | zie boven |
+| `SRT_LOSS_TIMEOUT_MS` | `loss_timeout_ms` | `2000` |
+| `SRT_RETRY_INTERVAL_MS` | `retry_interval_ms` | `2000` |
+| `SRT_FPS` | `fps` | `25` |
+| `SRT_VIDEO_BITRATE_KBPS` | `video_bitrate_kbps` | `4000` |
+| `SRT_X264_PRESET` | `x264_preset` | `veryfast` |
+| `SRT_VIDEO_THREADS` | `video_threads` | `0` (auto) |
+| `SRT_FILTER_THREADS` | `filter_threads` | `0` (auto) |
+
+ODROID-N2-startpunt, zoals bij `linrad_dvb`:
 
 ```sh
-UDP_TS=127.0.0.1:10000 tools-pi6ehv/dvbt_rx_pi6ehv.sh
-```
-
-De oude naam `UDP_OUT` blijft als alias werken, maar `UDP_TS` is de
-voorkeursnaam. Zet `UDP_TS=off` om terug te vallen naar de oude stdout/FIFO-route.
-
-Het script zet ffmpeg standaard op `FFMPEG_MAP=0:v:0`, `FFMPEG_AUDIO=aac` en
-`FFMPEG_AUDIO_BITRATE=96k`, zodat de eerste audiostream als AAC meegaat in de
-SRT MPEG-TS output:
-
-```sh
+SRT_X264_PRESET=ultrafast SRT_VIDEO_THREADS=3 SRT_FILTER_THREADS=1 \
 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-Als audio bij een zwakke of fout gedetecteerde stream de SRT-output blokkeert
-met bijvoorbeeld `sample rate not set`, kan audio worden uitgezet:
+De resolutie is vast 1920×1080. De oude `FFMPEG_SCALE`, `FFMPEG_MAP`,
+`FFMPEG_AUDIO` en `FFMPEG_VIDEO_*`-opties zijn vervangen door deze route en
+`SRT_*`-instellingen.
+
+`UDP_TS=127.0.0.1:10000` kiest de lokale TS-ingang; `UDP_OUT` blijft een alias.
+Gebruik een numeriek lokaal IPv4-adres. `UDP_TS=off` kiest de stdout/FIFO-route.
+De bewaker is ook los te starten bij een al draaiende decoder met UDP-uitgang:
 
 ```sh
-FFMPEG_AUDIO=off tools-pi6ehv/dvbt_rx_pi6ehv.sh
+./build/rbdvbt_srt --udp-input 127.0.0.1:10000 \
+  --url 'srt://44.137.26.85:4001?mode=caller&latency=500000' \
+  --ffmpeg ../ffmpeg/ffmpeg
 ```
 
-De SRT-output wordt standaard opnieuw gecodeerd naar 960x540 H.264:
-
-```sh
-FFMPEG_SCALE=960:540 tools-pi6ehv/dvbt_rx_pi6ehv.sh
-```
-
-960x540 is exact 16:9 en werkt beter met SRT-ingangen die geen kleine DATV-
-resolutie accepteren. Zet `FFMPEG_SCALE=off` om terug te gaan naar stream-copy
-zonder opschalen. De bitrate staat standaard op `900k` en kan met
-`FFMPEG_VIDEO_BITRATE` worden aangepast.
-
-ffmpeg stderr wordt standaard tijdelijk gelogd in de run-directory onder `/tmp`
-en bij cleanup verwijderd. Zet `FFMPEGLOG=/pad/naar/ffmpeg.log` als je die log
-voor diagnose wilt bewaren. De watchdog stopt de hele pipeline wanneer ffmpeg
-in de recente log herhaald `non-existing PPS` of `no frame!` meldt. Standaard
-gebeurt dat bij 20 recente meldingen, zodat de user-service de keten opnieuw
-start in plaats van een oude buffer te blijven tonen. Dit kan worden aangepast
-met `FFMPEG_NO_FRAME_LIMIT`; zet `FFMPEG_NO_FRAME_LIMIT=0` om deze controle uit
-te schakelen.
+SRT/FFmpeg stderr wordt tijdelijk gelogd onder `/tmp` en bij cleanup verwijderd.
+Zet `FFMPEGLOG=/pad/naar/ffmpeg.log` om die log te bewaren.
 
 Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:
 
@@ -155,22 +154,13 @@ snellere statusupdates, maar maken de reduced-bandwidth live-keten gevoeliger
 voor korte trackingdippen.
 
 Het startscript bewaakt de receiverstatus. Nadat er eenmaal lock of OFDM-sync
-is geweest, herstart het standaard de RTL-SDR, receiver en ffmpeg pipeline
-wanneer zowel `locked` als `lamp_ofdm_sync` langer dan 15 seconden false
-blijven, wanneer de status-JSON langer dan 30 seconden niet meer wordt
-bijgewerkt, of wanneer ffmpeg in een H.264 no-frame/PPS-foutlus blijft hangen.
-Daarmee krijgt de decoder tijd om TS/video opnieuw te pakken wanneer
-`--wait-video-start` tijdelijk wacht, maar valt de SRT-verbinding nog steeds
-kort weg in plaats van dat het laatste ontvangen beeld blijft staan wanneer de
-frontend-lock echt weg is.
-
-De receiver kan een marginale live chunk droppen en de transportstream opnieuw
-acquiren terwijl `lamp_ofdm_sync` nog true is. Dat is bedoeld om te voorkomen
-dat zwakke chunks de Viterbi/outer FEC state beschadigen; de watchdog grijpt pas
-in wanneer ook de OFDM-sync wegblijft.
+is geweest, herstart het de pipeline alleen als status JSON langer dan
+`STATUS_STALE_TIMEOUT` (standaard 30 seconden) ontbreekt of niet wordt bijgewerkt.
+Ontvangstverlies wordt door de SRT-bewaker afgehandeld en herstart de ontvanger
+niet meer. De oude `LOCK_LOSS_TIMEOUT` en `FFMPEG_NO_FRAME_LIMIT` vervallen.
 
 ```sh
-LOCK_LOSS_TIMEOUT=20 STATUS_STALE_TIMEOUT=15 tools-pi6ehv/dvbt_rx_pi6ehv.sh
+STATUS_STALE_TIMEOUT=15 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
 Watchdog-herstarts zijn standaard onbeperkt. Gebruik `MAX_RESTARTS=N` om dat te

@@ -89,7 +89,11 @@ Benodigd voor de volledige interface:
 
 - CMake 3.16+, C11-compiler en C++17-compiler voor Qt6 (helpers blijven C++11).
 - `pkg-config`, FFTW3 single precision en pthreads.
+- Op Linux: GLib development-bestanden voor de headless SRT-uitgang
+  (`RBDVBT_BUILD_SRT=ON`, standaard aan). FFmpeg met libsrt en libx264 is
+  nodig bij gebruik van SRT. Zonder SRT bouwen: `-DRBDVBT_BUILD_SRT=OFF`.
 - Qt6 Widgets, Network en Test (Test is alleen nodig met `BUILD_TESTING=ON`).
+- Python 3 voor de SRT-integratietests met `BUILD_TESTING=ON`.
 - `rtl_sdr` en toegang tot de RTL-SDR USB-ontvanger.
 - Optioneel libVLC development-bestanden en VLC-plugins voor video/audio in
   het venster; VLC als losse speler werkt ook zonder ingebouwde libVLC.
@@ -106,13 +110,15 @@ Gevalideerde decoderrevisie voor deze ombouw:
 CMake bouwt de aanwezige bronbestanden rechtstreeks; het downloadt of wijzigt
 niets in die checkout. Je hoeft de overige ontvangers of de GTK-interface
 van `sdr-dvb-pipelines` niet te bouwen. Voor reproduceerbare builds gebruik je
-een checkout van die revisie; latere wijzigingen daarin worden bij een
-volgende build meegenomen.
+een checkout van die revisie voor de decoder. De SRT-bewaker vereist daarnaast
+`src/srt_output.c` en `src/process_control.h` uit een recente checkout
+met SRT-ondersteuning; latere wijzigingen daarin worden bij een volgende build
+meegenomen.
 
 Op Debian/Ubuntu zijn de GUI-afhankelijkheden bijvoorbeeld:
 
 ```sh
-sudo apt install build-essential cmake pkg-config libfftw3-dev qt6-base-dev rtl-sdr libvlc-dev vlc
+sudo apt install build-essential cmake pkg-config libfftw3-dev libglib2.0-dev qt6-base-dev rtl-sdr libvlc-dev vlc ffmpeg
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
@@ -375,7 +381,7 @@ Voor een Odroid of andere Linux ontvanger staat er een opstartscript dat de
 geteste pipeline combineert:
 
 ```text
-rtl_sdr -> rbdvbt_rx -> MPEG-TS UDP :10000 -> ffmpeg -> SRT
+rtl_sdr -> rbdvbt_rx -> MPEG-TS UDP :10000 -> rbdvbt_srt -> ffmpeg -> SRT
 ```
 
 Standaard gebruikt het script `436000000 Hz`, RTL-SDR device `00000001`,
@@ -407,20 +413,70 @@ Als ffmpeg niet in `PATH` staat:
 FFMPEG=../ffmpeg/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-De PI6EHV pipeline gebruikt standaard `UDP_TS=127.0.0.1:10000` tussen receiver
-en ffmpeg. Daarmee wordt de oude stdout/FIFO-route vermeden. Receiver-diagnostiek
-gaat naar `logs/rx_YYYYmmdd_HHMMSS.log`, en status JSON standaard naar
-`/var/www/html/dvb/dvbt-rx-status.json`. Zet `GUI=1` om ook `--gui` aan de
-receiver door te geven. ffmpeg stuurt standaard de eerste videostream en de
-eerste audiostream door (`FFMPEG_MAP=0:v:0`, `FFMPEG_AUDIO=aac`,
-`FFMPEG_AUDIO_BITRATE=96k`). Zet `FFMPEG_AUDIO=off` als onvolledige
-audioparameters bij zwakke locks de SRT-outputheader blokkeren.
-De PI6EHV watchdog stopt de pipeline
-wanneer na eerdere lock zowel de volledige receiver-lock als OFDM-sync langer
-dan `LOCK_LOSS_TIMEOUT` weg zijn. Ook stopt hij wanneer ffmpeg herhaald H.264
-`no frame!` of `non-existing PPS` meldt, zodat systemd de keten opnieuw kan
-starten. ffmpeg stderr wordt daarvoor standaard tijdelijk onder `/tmp` gelogd
-en bij cleanup verwijderd; receiverlogs worden beperkt met `LOG_KEEP`.
+Het script draait standaard headless. `rbdvbt_srt` bouwt rechtstreeks dezelfde
+SRT-bewaker als `linrad_dvb` uit `sdr-dvb-pipelines`; er is geen aparte kopie.
+Zonder video blijft de ontvanger draaien zonder SRT-verbinding. Zodra
+voortschrijdende videopayload binnenkomt, start de bewaker FFmpeg en de
+SRT-caller. Na standaard 2000 ms zonder videopayload stopt FFmpeg en wordt SRT
+verbroken. Bij nieuwe ontvangst start de uitgang vanzelf opnieuw. Alleen PSI,
+null-pakketten, herhaalde continuity counters of pakketten met transportfouten
+houden de uitgang niet open. Dit is dezelfde videopayload-detectie als in
+`linrad_dvb`; de bewaker controleert geen daadwerkelijk gedecodeerde frames.
+
+De uitvoer volgt ook precies `linrad_dvb`: **1920×1080p25 H.264**, standaard
+4000 kbit/s, preset `veryfast`, en optionele audio als AAC stereo 48 kHz,
+128 kbit/s. Interlaced beeld wordt gedeïnterlaced. De bronbeeldverhouding,
+inclusief anamorfische pixels, blijft behouden met vierkante uitvoerpixels en
+zwarte balken. De resolutie staat vast op Full HD; fps, bitrate, preset en
+threads zijn instelbaar:
+
+| Environmentvariabele | Default | Betekenis |
+|---|---|---|
+| `SRT_LOSS_TIMEOUT_MS` | `2000` | Zonder video na deze tijd SRT verbreken |
+| `SRT_RETRY_INTERVAL_MS` | `2000` | Nieuwe poging na uitgangsfout zolang video binnenkomt |
+| `SRT_FPS` | `25` | Uitvoerframerate, 1–60 |
+| `SRT_VIDEO_BITRATE_KBPS` | `4000` | H.264-bitrate, 100–50000 kbit/s |
+| `SRT_X264_PRESET` | `veryfast` | x264-preset |
+| `SRT_VIDEO_THREADS` | `0` | Threads per decoder/encoderpool, 0=automatisch |
+| `SRT_FILTER_THREADS` | `0` | Filterthreads, 0=automatisch |
+
+Hetzelfde startpunt als in de `linrad_dvb`-configuratie voor een ODROID-N2:
+
+```sh
+SRT_X264_PRESET=ultrafast SRT_VIDEO_THREADS=3 SRT_FILTER_THREADS=1 \
+tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+De vroegere `FFMPEG_SCALE`, `FFMPEG_AUDIO`, `FFMPEG_MAP` en
+`FFMPEG_VIDEO_*`-instellingen zijn vervangen door bovenstaande vaste
+Full HD H.264/AAC-route en `SRT_*`-instellingen.
+
+De interne TS-route blijft standaard `UDP_TS=127.0.0.1:10000`.
+De bewaker blijft die UDP-ingang uitlezen als FFmpeg of de SRT-server vastloopt;
+een begrensde wachtrij voorkomt dat de ontvanger op de uitgang moet wachten.
+Met `UDP_TS=off` werkt ook MPEG-TS via stdout/FIFO. Receiver-diagnostiek gaat
+naar `logs/rx_YYYYmmdd_HHMMSS.log`, status JSON standaard naar
+`/var/www/html/dvb/dvbt-rx-status.json`. Zet `GUI=1` voor de X11-diagnostiek.
+SRT/FFmpeg-diagnostiek staat tijdelijk onder `/tmp`; kies `FFMPEGLOG=/pad/log`
+om die te bewaren. Receiverlogs worden beperkt met `LOG_KEEP`.
+
+Ontvangstverlies herstart de ontvanger niet meer: de uitgang regelt dit zelf.
+De watchdog bewaakt alleen vastgelopen statusupdates na een eerste lock
+(`STATUS_STALE_TIMEOUT`, standaard 30 s). De oude `LOCK_LOSS_TIMEOUT` en
+`FFMPEG_NO_FRAME_LIMIT` vervallen.
+
+De bewaker kan ook los bij een al draaiende ontvanger worden gestart.
+Geef de ontvanger daarvoor `--udp-ts 127.0.0.1:10000` mee en start:
+
+```sh
+./build/rbdvbt_srt --udp-input 127.0.0.1:10000 \
+  --url 'srt://44.137.26.85:4001?mode=caller&latency=500000' \
+  --ffmpeg ../ffmpeg/ffmpeg --fps 25 --bitrate-kbps 4000
+```
+
+Deze opdracht ontvangt MPEG-TS via UDP en verstuurt H.264/AAC via SRT; stdout
+blijft leeg. Zonder `--udp-input` leest de bewaker MPEG-TS op stdin.
+Gebruik `./build/rbdvbt_srt --help` voor alle bewakeropties.
 
 De losse webpagina `tools-pi6ehv/dvbt-rx-status.html` leest die JSON via
 `dvb/dvbt-rx-status.json`. Plaats de pagina op de webroot van de Odroid,

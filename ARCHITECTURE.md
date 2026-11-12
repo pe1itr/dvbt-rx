@@ -71,6 +71,37 @@ De interface beëindigt dan de RTL- en decoderprocessen asynchroon, start ze met
 de nieuwe afstemming opnieuw en laat VLC en de UDP-poorten actief. Zo blijft de
 Qt-eventloop reageren terwijl de DVB-T-decoder de lock opnieuw opbouwt.
 
+## Headless SRT-uitgang
+
+De PI6EHV-launcher houdt RTL-SDR en `rbdvbt_rx` actief tijdens ontvangstverlies:
+
+```text
+rtl_sdr -> rbdvbt_rx -> MPEG-TS UDP -> rbdvbt_srt -> FFmpeg -> SRT caller
+```
+
+CMake bouwt `rbdvbt_srt` met `src/srt_output.c` uit dezelfde geselecteerde
+`sdr-dvb-pipelines`-checkout als de decoder. Deze module is ook de bewaker in
+`linrad_dvb`; de lokale `tools/rbdvbt_srt.c` past alleen een optionele IPv4
+UDP-ingang aan naar stdin. De checkout is bij runtime niet nodig. Deze
+POSIX-helper gebruikt GLib zonder GTK/Qt of scherm en wordt op Linux standaard
+meegebouwd (`RBDVBT_BUILD_SRT`). De Windows GUI blijft onafhankelijk hiervan.
+
+De gedeelde module synchroniseert TS, detecteert voortschrijdende,
+ongescrambelde videopayload zonder TEI en start alleen dan FFmpeg. Dit is
+payload-detectie, geen controle op werkelijk gedecodeerde videoframes. Na
+standaard 2000 ms zonder video stopt FFmpeg en dus de SRT-verbinding. De
+bewaker blijft TS innemen en start bij terugkerende video opnieuw. Een begrensde
+wachtrij van maximaal circa 1 MiB/1 seconde houdt uitgangsproblemen weg van de
+ontvangstketen. De launcher stopt de bewaker bij afsluiten; die beëindigt en
+reapt zijn encoder, zo nodig met SIGKILL.
+
+De gedeelde FFmpeg-argumenten leveren 1920×1080, standaard 25 fps en 4 Mbit/s
+H.264, met deïnterlacing, SAR-bewuste schaling, zwarte balken, vierkante pixels
+en optionele AAC stereo 48 kHz/128 kbit/s. Alleen fps, bitrate, preset en
+threadpools zijn configureerbaar, gelijk aan `linrad_dvb`. De launcherwatchdog
+bewaakt vastgelopen statusupdates na eerste lock; signaalverlies herstart geen
+hardware of decoder meer.
+
 ## Decoder en verificatie
 
 De decoder ontvangt expliciete DVB-T-modeparameters; TPS-autodetectie maakt
@@ -83,3 +114,8 @@ streaming-Viterbi-, PSI- en frontendtests rechtstreeks uit de decodercheckout en
 test de interface met gecontroleerde subprocessen en localhost UDP. Deze tests
 hebben geen RTL-SDR-hardware nodig. Een live RF-praktijktest en een nieuwe
 native Windows-build zijn aanvullend nodig voor de betreffende doelmachines.
+
+De SRT-tests hergebruiken de beschikbare upstream bewakertests en testen de
+lokale UDP-adapter. Met FFmpeg/ffprobe en SRT-ondersteuning wordt ook werkelijk
+via localhost gecodeerd en gecontroleerd op 1080p H.264, AAC, vierkante pixels,
+anamorfische 4:3-bronnen, zwarte balken en opnieuw verbinden.

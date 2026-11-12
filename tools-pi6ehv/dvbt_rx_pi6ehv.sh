@@ -6,6 +6,7 @@ repo_dir="$(CDPATH= cd -- "${script_dir}/.." && pwd)"
 
 build_dir="${BUILD_DIR:-${repo_dir}/build}"
 rbdvbt_rx="${RBDVBT_RX:-${build_dir}/rbdvbt_rx}"
+srt_worker="${RBDVBT_SRT:-${build_dir}/rbdvbt_srt}"
 rtl_sdr_bin="${RTL_SDR:-rtl_sdr}"
 ffmpeg_bin="${FFMPEG:-${repo_dir}/../ffmpeg/ffmpeg}"
 
@@ -29,29 +30,18 @@ rxlog="${RXLOG:-${log_dir}/rx_${session}.log}"
 ffmpeglog="${FFMPEGLOG:-}"
 ffmpeglog_help="${FFMPEGLOG:-temporary run log}"
 srt_url="${SRT_URL:-srt://44.137.26.85:4001?mode=caller&latency=500000}"
-ffmpeg_loglevel="${FFMPEG_LOGLEVEL:-error}"
-ffmpeg_probesize="${FFMPEG_PROBESIZE:-2000000}"
-ffmpeg_analyzeduration="${FFMPEG_ANALYZEDURATION:-2000000}"
-if [ "${FFMPEG_MAP+x}" = "x" ]; then
-    ffmpeg_map="${FFMPEG_MAP}"
-    ffmpeg_custom_map=1
-else
-    ffmpeg_map="0:v:0"
-    ffmpeg_custom_map=0
-fi
-ffmpeg_scale="${FFMPEG_SCALE:-960:540}"
-ffmpeg_audio="${FFMPEG_AUDIO:-aac}"
-ffmpeg_audio_bitrate="${FFMPEG_AUDIO_BITRATE:-96k}"
-ffmpeg_video_bitrate="${FFMPEG_VIDEO_BITRATE:-900k}"
-ffmpeg_video_maxrate="${FFMPEG_VIDEO_MAXRATE:-${ffmpeg_video_bitrate}}"
-ffmpeg_video_bufsize="${FFMPEG_VIDEO_BUFSIZE:-1800k}"
+srt_loss_ms="${SRT_LOSS_TIMEOUT_MS:-2000}"
+srt_retry_ms="${SRT_RETRY_INTERVAL_MS:-2000}"
+srt_fps="${SRT_FPS:-25}"
+srt_bitrate="${SRT_VIDEO_BITRATE_KBPS:-4000}"
+srt_preset="${SRT_X264_PRESET:-veryfast}"
+srt_video_threads="${SRT_VIDEO_THREADS:-0}"
+srt_filter_threads="${SRT_FILTER_THREADS:-0}"
 video_start="${WAIT_VIDEO_START:-1}"
 enable_gui="${GUI:-0}"
 udp_ts="${UDP_TS:-${UDP_OUT:-127.0.0.1:10000}}"
 watchdog_enabled="${WATCHDOG_ENABLED:-1}"
-lock_loss_timeout="${LOCK_LOSS_TIMEOUT:-15}"
 status_stale_timeout="${STATUS_STALE_TIMEOUT:-30}"
-ffmpeg_no_frame_limit="${FFMPEG_NO_FRAME_LIMIT:-20}"
 watchdog_interval="${WATCHDOG_INTERVAL:-1}"
 restart_on_watchdog="${RESTART_ON_WATCHDOG:-1}"
 restart_delay="${RESTART_DELAY:-2}"
@@ -83,21 +73,21 @@ Environment:
   LOG_KEEP        receiver logs to keep in LOG_DIR. Default: ${log_keep}
   RXLOG           receiver log path. Default: ${rxlog}
   FFMPEGLOG       ffmpeg log path. Default: ${ffmpeglog_help}
-  FFMPEG_LOGLEVEL ffmpeg loglevel. Default: ${ffmpeg_loglevel}
-  FFMPEG_MAP      ffmpeg stream map for SRT output. Default: ${ffmpeg_map}
-  FFMPEG_SCALE    SRT video scale WIDTH:HEIGHT, or off to stream-copy. Default: ${ffmpeg_scale}
-  FFMPEG_AUDIO    SRT audio handling: off, copy, or aac. Default: ${ffmpeg_audio}
-  FFMPEG_AUDIO_BITRATE AAC audio bitrate when FFMPEG_AUDIO=aac. Default: ${ffmpeg_audio_bitrate}
-  FFMPEG_VIDEO_BITRATE scaled H.264 target bitrate. Default: ${ffmpeg_video_bitrate}
-  WATCHDOG_ENABLED monitor and stop/restart pipeline when set to 1. Default: ${watchdog_enabled}
-  LOCK_LOSS_TIMEOUT seconds without lock after first lock before watchdog action. Default: ${lock_loss_timeout}
-  STATUS_STALE_TIMEOUT seconds without fresh JSON after first lock before watchdog action. Default: ${status_stale_timeout}
-  FFMPEG_NO_FRAME_LIMIT recent h264 parser errors before restart. Default: ${ffmpeg_no_frame_limit}
+  RBDVBT_SRT      SRT supervisor path. Default: ${srt_worker}
+  SRT_LOSS_TIMEOUT_MS disconnect after no video payload. Default: ${srt_loss_ms}
+  SRT_RETRY_INTERVAL_MS retry output while video is present. Default: ${srt_retry_ms}
+  SRT_FPS         1920x1080 output frame rate. Default: ${srt_fps}
+  SRT_VIDEO_BITRATE_KBPS H.264 target bitrate. Default: ${srt_bitrate}
+  SRT_X264_PRESET x264 speed/quality preset. Default: ${srt_preset}
+  SRT_VIDEO_THREADS decoder/encoder threads per pool, 0=auto. Default: ${srt_video_threads}
+  SRT_FILTER_THREADS filter threads, 0=auto. Default: ${srt_filter_threads}
+  WATCHDOG_ENABLED restart on stale status after first lock. Default: ${watchdog_enabled}
+  STATUS_STALE_TIMEOUT seconds without fresh JSON before restart. Default: ${status_stale_timeout}
   RESTART_ON_WATCHDOG restart pipeline after watchdog stop when set to 1. Default: ${restart_on_watchdog}
   RESTART_DELAY seconds to wait before a watchdog restart. Default: ${restart_delay}
   MAX_RESTARTS maximum watchdog restarts, 0 means unlimited. Default: ${max_restarts}
   GUI             pass --gui to rbdvbt_rx when set to 1. Default: 0
-  UDP_TS          receiver-to-ffmpeg UDP TS endpoint. Default: ${udp_ts}
+  UDP_TS          receiver-to-SRT-supervisor UDP TS endpoint. Default: ${udp_ts}
   UDP_OUT         compatibility alias for UDP_TS
   WAIT_VIDEO_START wait for a clean video start when set to 1. Default: 1
 
@@ -119,6 +109,10 @@ if [ ! -x "${rbdvbt_rx}" ]; then
     printf "Build it first with: tools-pi6ehv/build_odroid_arm64.sh\n" >&2
     exit 1
 fi
+if [ ! -x "${srt_worker}" ]; then
+    printf "SRT supervisor not found: %s\nRebuild with RBDVBT_BUILD_SRT=ON.\n" "${srt_worker}" >&2
+    exit 1
+fi
 if ! command -v "${rtl_sdr_bin}" >/dev/null 2>&1; then
     printf "rtl_sdr not found: %s\n" "${rtl_sdr_bin}" >&2
     exit 1
@@ -132,16 +126,6 @@ if ! "${ffmpeg_bin}" -hide_banner -protocols 2>/dev/null | awk '$1 == "srt" { fo
     printf "Install an ffmpeg build with libsrt support or set FFMPEG=/path/to/ffmpeg-with-srt.\n" >&2
     exit 1
 fi
-case "${ffmpeg_audio}" in
-    off|copy|aac)
-        ;;
-    *)
-        printf "Unsupported FFMPEG_AUDIO value: %s\n" "${ffmpeg_audio}" >&2
-        printf "Use FFMPEG_AUDIO=off, FFMPEG_AUDIO=copy, or FFMPEG_AUDIO=aac.\n" >&2
-        exit 1
-        ;;
-esac
-
 mkdir -p "${log_dir}"
 
 prune_logs() {
@@ -190,7 +174,7 @@ if [ "${enable_gui}" = "1" ]; then
 fi
 
 rx_udp_ts=""
-ffmpeg_ts_input=""
+srt_input_args=()
 case "${udp_ts}" in
     ""|0|off|OFF|none|NONE) udp_ts="" ;;
 esac
@@ -208,7 +192,7 @@ if [ -n "${udp_ts}" ]; then
             ;;
     esac
     rx_args+=(--udp-ts "${rx_udp_ts}")
-    ffmpeg_ts_input="udp://@:${udp_port}?fifo_size=1000000&overrun_nonfatal=1"
+    srt_input_args=(--udp-input "${rx_udp_ts}")
 else
     rx_args+=(--stdout-ts)
 fi
@@ -223,27 +207,6 @@ json_uint() {
     key="$1"
     file="$2"
     sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p" "${file}" 2>/dev/null | tail -n 1
-}
-
-ffmpeg_h264_error_count() {
-    file="$1"
-    offset="$2"
-    size=0
-
-    if [ ! -s "${file}" ]; then
-        printf "0 0\n"
-        return 0
-    fi
-    size="$(wc -c < "${file}" 2>/dev/null | tr -d ' ' || printf "0")"
-    if [ "${size}" -le "${offset}" ]; then
-        printf "0 %s\n" "${size}"
-        return 0
-    fi
-    tail -c "+$((offset + 1))" "${file}" 2>/dev/null | awk -v size="${size}" '
-        /non-existing PPS/ { count++ }
-        /no frame!/ { count++ }
-        END { printf "%u %s\n", count, size }
-    '
 }
 
 cleanup() {
@@ -288,25 +251,28 @@ printf "  RF:        %s Hz, sample rate %s, gain %s, device %s\n" "${frequency}"
 printf "  DVB-T:     SR %s, GI %s, FEC %s\n" "${symbol_rate}" "${gi}" "${fec}" >&2
 printf "  SRT:       %s\n" "${srt_url}" >&2
 if [ -n "${rx_udp_ts}" ]; then
-    printf "  TS path:   receiver UDP %s -> ffmpeg %s\n" "${rx_udp_ts}" "${ffmpeg_ts_input}" >&2
+    printf "  TS path:   receiver UDP %s -> SRT supervisor\n" "${rx_udp_ts}" >&2
 else
-    printf "  TS path:   receiver stdout -> ffmpeg FIFO\n" >&2
+    printf "  TS path:   receiver stdout -> SRT supervisor FIFO\n" >&2
 fi
+printf "  Output:    1920x1080p%s H.264/AAC, %s kbps, preset %s\n" "${srt_fps}" "${srt_bitrate}" "${srt_preset}" >&2
+printf "  SRT gate:  loss=%s ms retry=%s ms\n" "${srt_loss_ms}" "${srt_retry_ms}" >&2
 printf "  RX log:    %s\n" "${rxlog}" >&2
-printf "  FFmpeg log: %s\n" "${ffmpeglog_help}" >&2
+printf "  SRT log:   %s\n" "${ffmpeglog_help}" >&2
 printf "  Status:    %s\n" "${status_json}" >&2
-printf "  Watchdog:  enabled=%s lock_loss=%ss stale_json=%ss h264_errors=%s restart=%s delay=%ss max=%s\n" \
-    "${watchdog_enabled}" "${lock_loss_timeout}" "${status_stale_timeout}" "${ffmpeg_no_frame_limit}" \
-    "${restart_on_watchdog}" "${restart_delay}" "${max_restarts}" >&2
 
 : > "${rxlog}"
-trap cleanup INT TERM EXIT
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 run_pipeline_once() {
     attempt="$1"
     pipeline_rc=0
     watchdog_reason=""
-    trap cleanup INT TERM EXIT
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     run_dir="$(mktemp -d "/tmp/dvbt-rx.${session}.XXXXXX")"
     current_ffmpeglog="${ffmpeglog}"
     if [ -z "${current_ffmpeglog}" ]; then
@@ -318,84 +284,29 @@ run_pipeline_once() {
 
     iq_fifo="${run_dir}/iq.u8"
     mkfifo "${iq_fifo}"
-    current_ffmpeg_ts_input="${ffmpeg_ts_input}"
-    if [ -z "${current_ffmpeg_ts_input}" ]; then
+    if [ -z "${rx_udp_ts}" ]; then
         ts_fifo="${run_dir}/rx.ts"
         mkfifo "${ts_fifo}"
-        current_ffmpeg_ts_input="${ts_fifo}"
     else
         ts_fifo=""
     fi
 
-    ffmpeg_args=(
-        -hide_banner
-        -loglevel "${ffmpeg_loglevel}"
-        -fflags nobuffer
-        -f mpegts
-        -probesize "${ffmpeg_probesize}"
-        -analyzeduration "${ffmpeg_analyzeduration}"
-        -i "${current_ffmpeg_ts_input}"
+    srt_args=(
+        --url "${srt_url}"
+        --ffmpeg "${ffmpeg_bin}"
+        --loss-ms "${srt_loss_ms}"
+        --retry-ms "${srt_retry_ms}"
+        --fps "${srt_fps}"
+        --bitrate-kbps "${srt_bitrate}"
+        --preset "${srt_preset}"
+        --video-threads "${srt_video_threads}"
+        --filter-threads "${srt_filter_threads}"
     )
-    if [ "${ffmpeg_custom_map}" = "1" ]; then
-        ffmpeg_args+=(
-            -map "${ffmpeg_map}"
-        )
+    if [ -n "${rx_udp_ts}" ]; then
+        "${srt_worker}" "${srt_input_args[@]}" "${srt_args[@]}" 2> "${current_ffmpeglog}" &
     else
-        ffmpeg_args+=(
-            -map 0:v:0
-        )
-        if [ "${ffmpeg_audio}" != "off" ]; then
-            ffmpeg_args+=(
-                -map '0:a:0?'
-            )
-        fi
+        "${srt_worker}" "${srt_args[@]}" < "${ts_fifo}" 2> "${current_ffmpeglog}" &
     fi
-    if [ "${ffmpeg_scale}" = "off" ] || [ "${ffmpeg_scale}" = "copy" ]; then
-        if [ "${ffmpeg_audio}" = "aac" ] && [ "${ffmpeg_custom_map}" != "1" ]; then
-            ffmpeg_args+=(
-                -c:v copy
-                -c:a aac
-                -b:a "${ffmpeg_audio_bitrate}"
-            )
-        else
-            ffmpeg_args+=(
-                -c copy
-            )
-        fi
-    else
-        ffmpeg_width="${ffmpeg_scale%%:*}"
-        ffmpeg_height="${ffmpeg_scale#*:}"
-        ffmpeg_args+=(
-            -vf "scale=${ffmpeg_width}:${ffmpeg_height}:force_original_aspect_ratio=decrease,pad=${ffmpeg_width}:${ffmpeg_height}:(ow-iw)/2:(oh-ih)/2"
-            -c:v libx264
-            -preset ultrafast
-            -tune zerolatency
-            -b:v "${ffmpeg_video_bitrate}"
-            -maxrate "${ffmpeg_video_maxrate}"
-            -bufsize "${ffmpeg_video_bufsize}"
-            -pix_fmt yuv420p
-        )
-        if [ "${ffmpeg_audio}" = "copy" ] || [ "${ffmpeg_custom_map}" = "1" ]; then
-            ffmpeg_args+=(
-                -c:a copy
-            )
-        elif [ "${ffmpeg_audio}" = "aac" ]; then
-            ffmpeg_args+=(
-                -c:a aac
-                -b:a "${ffmpeg_audio_bitrate}"
-            )
-        else
-            ffmpeg_args+=(
-                -an
-            )
-        fi
-    fi
-    ffmpeg_args+=(
-        -f mpegts
-        "${srt_url}"
-    )
-
-    "${ffmpeg_bin}" "${ffmpeg_args[@]}" 2> "${current_ffmpeglog}" &
     ffmpeg_pid=$!
 
     "${rtl_sdr_bin}" -d "${device}" -f "${frequency}" -s "${sample_rate}" -g "${gain}" - > "${iq_fifo}" &
@@ -409,9 +320,6 @@ run_pipeline_once() {
     rx_pid=$!
 
     seen_lock=0
-    lock_lost_since=0
-    ffmpeg_log_offset=0
-    ffmpeg_h264_errors=0
     start_time="$(date +%s)"
 
     while kill -0 "${rtl_pid}" 2>/dev/null &&
@@ -435,14 +343,6 @@ run_pipeline_once() {
 
             if [ "${locked}" = "true" ] || [ "${frontend_locked}" = "true" ]; then
                 seen_lock=1
-                lock_lost_since=0
-            elif [ "${seen_lock}" = "1" ]; then
-                if [ "${lock_lost_since}" = "0" ]; then
-                    lock_lost_since="${now}"
-                elif [ $((now - lock_lost_since)) -ge "${lock_loss_timeout}" ]; then
-                    request_watchdog_stop "receiver lock lost for ${lock_loss_timeout}s"
-                    return 75
-                fi
             fi
 
             if [ "${seen_lock}" = "1" ]; then
@@ -457,27 +357,17 @@ run_pipeline_once() {
                 fi
             fi
 
-            if [ "${ffmpeg_no_frame_limit}" != "0" ]; then
-                read -r new_ffmpeg_h264_errors ffmpeg_log_offset <<EOF
-$(ffmpeg_h264_error_count "${current_ffmpeglog}" "${ffmpeg_log_offset}")
-EOF
-                if [ "${new_ffmpeg_h264_errors}" -gt 0 ]; then
-                    ffmpeg_h264_errors=$((ffmpeg_h264_errors + new_ffmpeg_h264_errors))
-                else
-                    ffmpeg_h264_errors=0
-                fi
-                if [ "${ffmpeg_h264_errors}" -ge "${ffmpeg_no_frame_limit}" ]; then
-                    request_watchdog_stop "ffmpeg h264 parser stuck after repeated no-frame/PPS errors"
-                    return 75
-                fi
-            fi
         fi
         sleep "${watchdog_interval}"
     done
 
-    wait "${rtl_pid}" || pipeline_rc=$?
-    wait "${rx_pid}" || pipeline_rc=$?
-    wait "${ffmpeg_pid}" || pipeline_rc=$?
+    # Reap the process that exited, then stop its peers before waiting on them.
+    # Waiting for the live IQ source first would hang on an output failure.
+    for child in "${rtl_pid}" "${rx_pid}" "${ffmpeg_pid}"; do
+        if ! kill -0 "${child}" 2>/dev/null; then
+            wait "${child}" || pipeline_rc=$?
+        fi
+    done
     cleanup
     return "${pipeline_rc}"
 }
@@ -487,8 +377,9 @@ restart_count=0
 while true; do
     if run_pipeline_once "${attempt}"; then
         exit 0
+    else
+        pipeline_rc=$?
     fi
-    pipeline_rc=$?
 
     if [ "${pipeline_rc}" != "75" ] || [ "${restart_on_watchdog}" != "1" ]; then
         exit "${pipeline_rc}"

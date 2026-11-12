@@ -19,3 +19,9 @@ the older custom attribution license. A build using another decoder revision
 must provide that revision's corresponding source.
 
 Qt6, FFTW, RTL-SDR, libusb and VLC retain their respective licenses.
+
+The rbdvbt_srt executable also compiles src/srt_output.c and uses
+src/srt_output.h and src/process_control.h from sdr-dvb-pipelines directly.
+It carries the upstream project's GPL-3.0-only license; distribution must
+include the corresponding source for the actual upstream revision used.
+GLib and FFmpeg retain their respective licenses.
