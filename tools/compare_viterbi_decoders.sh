@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Rob Hardenberg / PE1ITR
 set -euo pipefail
 
 usage() {

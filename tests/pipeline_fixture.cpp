@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (c) 2026 Rob Hardenberg / PE1ITR */
 // Process fixture for real OS-pipe/lifecycle tests. Never opens SDR hardware.
 #include <QCoreApplication>
 #include <QFile>

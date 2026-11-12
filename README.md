@@ -1,5 +1,9 @@
 # DVB-T / RTL-SDR
 
+> **Ontwikkelstatus:** De ontwikkeling van deze repository is in principe
+> gestopt. De verdere ontwikkeling vindt plaats in
+> [sdr-dvb-pipelines](https://github.com/pe1itr/sdr-dvb-pipelines).
+
 Een compacte **Qt6-ontvanger voor reduced-bandwidth DVB-T met RTL-SDR**.
 De hoofdvensterindeling volgt `linrad_dvb`: een bedieningsbalk bovenaan,
 waterval en spectrum over de volle breedte, en daaronder constellatie links,
@@ -202,10 +206,11 @@ build/portsdown_iq_dump     synthetisch DVB-T IQ (optionele Portsdown-bron nodig
 build/iq_airscatter_channel aircraft-scattermodel voor s16 IQ
 ```
 
-Dezelfde Qt6-interface is bedoeld voor Linux en Windows; zie
-`README_WINDOWS_GUI.txt` voor de Windows-build en runtimebestanden. Deze
-ombouw is op Linux gebouwd en getest; een nieuwe Windows-build en live
-RTL-SDR-praktijktest moeten nog op de betreffende systemen worden uitgevoerd.
+Dezelfde Qt6-interface is bedoeld voor Linux en Windows; download de
+[Windows 0.2.0 pre-release](https://github.com/pe1itr/dvbt-rx/releases/tag/v0.2.0)
+en zie `README_WINDOWS_GUI.txt` voor de Windows-build en runtimebestanden. Deze
+ombouw is op Linux en voor Windows x64 gebouwd en onder Wine getest. Live
+RTL-SDR-praktijktests moeten nog op de betreffende systemen worden uitgevoerd.
 
 ## Basisgebruik
 
@@ -879,8 +884,19 @@ reduced-bandwidth DVB-T ontvanger.
 ## Licentie
 
 Auteur: **Rob Hardenberg / PE1ITR**.
-De actuele decoder uit `sdr-dvb-pipelines` valt onder **GPL-3.0-only**;
-zie `licenses/DECODER-GPL-3.0.txt` en de LICENSE in de gebruikte component.
-De GUI en oorspronkelijke hulpmiddelen in deze repository behouden de
-attributielicentie in [LICENSE](LICENSE). Zie [NOTICE](NOTICE) voor de
-bronvermelding en voorwaarden voor distributie van de decoder.
+De eigen projectcode en documentatie vallen onder **GPL-3.0-only**, inclusief
+de Qt6-interface, hulpmiddelen, SRT-wrapper, scripts en tests. De gedeelde
+decoder en SRT-bewaker uit `sdr-dvb-pipelines` gebruiken dezelfde licentie.
+Zie [LICENSE](LICENSE) voor de volledige tekst en [NOTICE](NOTICE) voor de
+copyrightvermelding, afbakening en externe componenten.
+
+Eerdere versies behouden hun destijds verleende rechten. De oude
+attributielicentie is bewaard in
+[licenses/Attribution-legacy.txt](licenses/Attribution-legacy.txt) en voegt
+geen voorwaarden toe aan de huidige GPL-code. Externe libraries en programma's
+behouden hun eigen licenties en auteursvermeldingen.
+
+Lever bij verspreiding van binaries ook de exacte bijbehorende broncode en
+buildscripts beschikbaar volgens de toepasselijke licenties, en voeg de
+licenties en notices van meegeleverde afhankelijkheden toe. Praktische
+release-instructies staan in [licenses/README.txt](licenses/README.txt).

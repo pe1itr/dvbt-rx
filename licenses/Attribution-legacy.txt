@@ -1,0 +1,30 @@
+Attribution Required Software License
+
+Copyright (c) 2026 Rob Hardenberg / PE1ITR
+
+Permission is granted to use, copy, modify, build, run, and redistribute this
+software, including modified versions, subject to the following conditions:
+
+1. Attribution is required. Any public use, redistribution, derived work,
+   publication, documentation, binary release, or project based on this
+   software must clearly mention the original author:
+
+       Rob Hardenberg / PE1ITR
+
+2. This license text must be included with redistributed source code and with
+   substantial binary or packaged redistributions.
+
+3. Contributions submitted to this project may be incorporated and redistributed
+   under this same license, unless a different written agreement is made with
+   the copyright holder.
+
+4. The software is provided "as is", without warranty of any kind, express or
+   implied, including but not limited to warranties of merchantability, fitness
+   for a particular purpose, and non-infringement.
+
+5. In no event shall the copyright holder or contributors be liable for any
+   claim, damage, or other liability arising from use of this software.
+
+This is an attribution-required permissive license. It is intentionally stricter
+than public-domain-style licensing because attribution to the original author is
+mandatory.

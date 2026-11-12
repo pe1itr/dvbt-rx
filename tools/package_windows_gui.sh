@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Rob Hardenberg / PE1ITR
 set -eu
 
 version="${1:-0.2.0}"
@@ -7,7 +9,7 @@ build_dir="${root_dir}/build-win"
 dist_dir="${root_dir}/dist"
 package_name="rbdvbt_gui-windows-x64-${version}"
 package_dir="${dist_dir}/${package_name}"
-vendor_rtlsdr_dir="${dist_dir}/vendor/rtlsdr"
+vendor_rtlsdr_dir="${RTLSDR_DIR:-${dist_dir}/vendor/rtlsdr}"
 
 if [ ! -d "${package_dir}" ]; then
     echo "package directory not found: ${package_dir}" >&2
@@ -23,7 +25,9 @@ install -m 644 "${root_dir}/README.md" "${package_dir}/README_PROJECT.md"
 install -m 644 "${root_dir}/LICENSE" "${package_dir}/LICENSE"
 install -m 644 "${root_dir}/NOTICE" "${package_dir}/NOTICE"
 mkdir -p "${package_dir}/licenses"
-install -m 644 "${root_dir}/licenses/DECODER-GPL-3.0.txt" "${package_dir}/licenses/DECODER-GPL-3.0.txt"
+for license_file in "${root_dir}"/licenses/*.txt; do
+    install -m 644 "${license_file}" "${package_dir}/licenses/"
+done
 if [ -f "${root_dir}/RELEASE_WINDOWS_${version}.md" ]; then
     install -m 644 "${root_dir}/RELEASE_WINDOWS_${version}.md" "${package_dir}/RELEASE_WINDOWS_${version}.md"
 fi

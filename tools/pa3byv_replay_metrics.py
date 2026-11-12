@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Rob Hardenberg / PE1ITR
 """Replay PA3BYV IQ segments and collect receiver metrics.
 
 This is intentionally small and self-contained so it can be used before and

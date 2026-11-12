@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Rob Hardenberg / PE1ITR
 cmake_minimum_required(VERSION 3.16)
 
 project(rbdvbt_rx VERSION 0.2.0 LANGUAGES C CXX)
@@ -272,4 +274,5 @@ install(TARGETS rbdvbt_rx RUNTIME DESTINATION bin)
 if(RBDVBT_BUILD_GUI)
     install(TARGETS rbdvbt_gui RUNTIME DESTINATION bin)
 endif()
-install(FILES LICENSE NOTICE licenses/DECODER-GPL-3.0.txt DESTINATION share/rbdvbt_rx)
+install(FILES LICENSE NOTICE DESTINATION share/rbdvbt_rx)
+install(DIRECTORY licenses/ DESTINATION share/rbdvbt_rx/licenses FILES_MATCHING PATTERN "*.txt")

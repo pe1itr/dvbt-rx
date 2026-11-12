@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (c) 2026 Rob Hardenberg / PE1ITR */
 #include "receiver_window.h"
 #include <QApplication>
 
@@ -19,6 +21,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QKeyEvent>
 #include <QPointer>
@@ -138,6 +141,20 @@ void ReceiverWindow::buildUi()
     toolbar->addWidget(config_);
     playerButton_ = new QPushButton("Externe speler");
     toolbar->addWidget(playerButton_);
+    auto *about = new QPushButton("Over");
+    about->setObjectName("about");
+    toolbar->addWidget(about);
+    connect(about, &QPushButton::clicked, this, [this]() {
+        QMessageBox::about(this, "Over DVB-T / RTL-SDR",
+            "<h3>DVB-T / RTL-SDR ontvanger</h3>"
+            "<p>Copyright &copy; 2026 Rob Hardenberg / PE1ITR</p>"
+            "<p>Vrije software onder <b>GNU GPL versie 3 (GPL-3.0-only)</b>. "
+            "Je mag de software wijzigen en verspreiden onder die licentie. "
+            "Er wordt geen garantie gegeven.</p>"
+            "<p>Zie LICENSE en NOTICE bij de distributie of de "
+            "<a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">volledige GPL-tekst</a>. "
+            "Externe componenten behouden hun eigen licenties.</p>");
+    });
     power_ = new QPushButton;
     power_->setObjectName("power");
     power_->setMinimumWidth(135);

@@ -19,7 +19,7 @@ Runtimebestanden naast elkaar:
   Qt6 runtime en platformplugin (via windeployqt)
   FFTW3f, pthread/compiler-runtime DLLs die de build nodig heeft
   RTL-SDR/libusb DLLs behorend bij rtl_sdr.exe
-  LICENSE, NOTICE en licenses/DECODER-GPL-3.0.txt
+  LICENSE, NOTICE en de volledige licenses/ map
 
   windeployqt path/to/package/rbdvbt_gui.exe
 
@@ -42,6 +42,15 @@ beschikbaar voor commandlinetests. Instellingen van de oude 0.1.x-launcher
 worden niet overgenomen. De oude Bestands-/IQ- en diagnose-uploadmenu's zijn
 vervangen door de compacte ontvangstinterface.
 
-Deze ombouw is op Linux gebouwd en met hardwarevrije proces- en decodertests
-gecontroleerd. Een native Windows-build en RTL-SDR-praktijktest zijn nog nodig.
+Deze ombouw is op Linux en met MinGW voor Windows x64 gebouwd. De Windows-GUI
+is onder Wine met tien hardwarevrije proces- en interfacetests gecontroleerd.
+Deze build gebruikt een externe VLC-speler; libVLC is niet meegebundeld.
+Een native Windows-praktijktest met fysieke RTL-SDR-hardware blijft nodig.
 Zie README.md voor afhankelijkheden, decoderrevisie en licentiegegevens.
+
+De eigen projectcode, GUI en hulpmiddelen vallen onder GPL-3.0-only.
+Copyright (c) 2026 Rob Hardenberg / PE1ITR. Zie LICENSE en NOTICE.
+Bij publicatie van binaries hoort ook de exacte bijbehorende broncode met
+buildscripts beschikbaar te zijn volgens de toepasselijke licenties, inclusief
+de gebruikte externe decoderbron. Voeg de notices/licenties van alle
+meegeleverde DLLs en programma's toe; zie licenses/README.txt.

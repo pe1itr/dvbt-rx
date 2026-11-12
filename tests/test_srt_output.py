@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Rob Hardenberg / PE1ITR
 """Exercise the shared linrad SRT supervisor and this receiver's UDP adapter."""
 import importlib.util
 import json

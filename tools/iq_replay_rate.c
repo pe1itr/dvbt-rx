@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (c) 2026 Rob Hardenberg / PE1ITR */
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif

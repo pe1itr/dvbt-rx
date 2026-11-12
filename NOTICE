@@ -1,27 +1,46 @@
-DVB-T / RTL-SDR interface
-Copyright (c) 2026 Rob Hardenberg / PE1ITR.
+DVB-T / RTL-SDR receiver
+Copyright (c) 2026 Rob Hardenberg / PE1ITR
+SPDX-License-Identifier: GPL-3.0-only
 
-The Qt6 interface and original helper programs in this repository retain the
-attribution-required license in LICENSE.
+This project is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, version 3 of the License.
 
-The rbdvbt_rx executable is compiled directly from the DVB-T component in:
+This project is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See LICENSE for the full terms.
+
+Scope
+-----
+GPL-3.0-only is the default license for project-owned code, including the Qt6
+interface, helper programs, launchers, build scripts, tests and documentation.
+Explicit licenses in third-party files or component directories take precedence.
+Copyright notices and applicable license notices must be preserved as required
+by the GPL; no additional public-use or publicity requirement is imposed.
+
+The earlier attribution license is preserved in licenses/Attribution-legacy.txt
+for historical reference. This change does not revoke permissions already
+granted for versions distributed under that license.
+
+Shared decoder and SRT supervisor
+--------------------------------
+rbdvbt_rx is compiled directly from components/dvbt in:
   https://github.com/pe1itr/sdr-dvb-pipelines
-  components/dvbt
-Copyright (c) 2026 Rob Hardenberg / PE1ITR.
-That component is licensed under GPL-3.0-only. Its license is reproduced in
-licenses/DECODER-GPL-3.0.txt; the authoritative copy accompanies the component.
-Validated source revision: 0f9665321ae70f39e01c8ef84ebdef2b802f89bd.
+rbdvbt_srt compiles src/srt_output.c and uses src/srt_output.h and
+src/process_control.h from that same checkout. These components are licensed
+under GPL-3.0-only. Their upstream copyright and license notices remain in force.
+licenses/DECODER-GPL-3.0.txt retains a copy of the upstream GPL text.
 
-When distributing the decoder, include its GPL license and provide the
-corresponding source for the exact revision and modifications used in the
-build, including build instructions. Do not label the current decoder with
-the older custom attribution license. A build using another decoder revision
-must provide that revision's corresponding source.
+Third-party software and distribution
+-------------------------------------
+Qt6, FFTW, GLib, RTL-SDR, libusb, VLC, FFmpeg, the optional Portsdown reference
+stack and compiler runtimes retain their own copyrights and license terms.
+This project's license does not replace their licenses. Third-party broadcast
+content in recordings, screenshots or videos is not covered by this license.
 
-Qt6, FFTW, RTL-SDR, libusb and VLC retain their respective licenses.
-
-The rbdvbt_srt executable also compiles src/srt_output.c and uses
-src/srt_output.h and src/process_control.h from sdr-dvb-pipelines directly.
-It carries the upstream project's GPL-3.0-only license; distribution must
-include the corresponding source for the actual upstream revision used.
-GLib and FFmpeg retain their respective licenses.
+When distributing binaries, provide the Corresponding Source for the exact
+versions and modifications used, including the relevant build/install scripts,
+in accordance with the applicable licenses. Include the notices and license
+texts for the actual libraries and programs supplied in the package. The
+source of an external component is not included in this repository merely
+because this build compiles it. See licenses/README.txt for release guidance.
