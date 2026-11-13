@@ -20,7 +20,8 @@ class OdroidBuildTests(unittest.TestCase):
         for name, body in {
             "uname": "print(os.environ['TEST_ARCH'])\n",
             "cmake": "with open(os.environ['TEST_COMMANDS'], 'a') as f: f.write(json.dumps(sys.argv) + '\\n')\n",
-            "ctest": "with open(os.environ['TEST_COMMANDS'], 'a') as f: f.write(json.dumps(sys.argv) + '\\n')\n",
+            "ctest": "with open(os.environ['TEST_COMMANDS'], 'a') as f: f.write(json.dumps(sys.argv) + '\\n')\n"
+                     "with open(os.environ['TEST_COMMANDS'] + '.cwd', 'w') as f: f.write(os.getcwd())\n",
         }.items():
             tool = self.root / name
             tool.write_text(f"#!{sys.executable}\nimport json, os, sys\n" + body)
@@ -30,6 +31,8 @@ class OdroidBuildTests(unittest.TestCase):
                     "BUILD_DIR": str(self.root / "build with spaces"), "BUILD_TYPE": "Release",
                     "TARGET_CPU": "auto", "JOBS": "2", "WITH_X11": "0", "RUN_TESTS": "0",
                     "INSTALL_DEPS": "0"}
+        self.env.pop("RBDVBT_DECODER_ROOT", None)
+        Path(self.env["BUILD_DIR"]).mkdir()
 
     def run_build(self, **settings):
         self.env.update(settings)
@@ -51,12 +54,19 @@ class OdroidBuildTests(unittest.TestCase):
         commands = self.run_build(TEST_ARCH="x86_64")
         self.assertIn("-DRBDVBT_TARGET_CPU=generic", commands[0])
 
+    def test_explicit_decoder_path(self):
+        decoder_root = str(self.root / "pipeline with spaces/components/dvbt")
+        commands = self.run_build(RBDVBT_DECODER_ROOT=decoder_root)
+        self.assertIn(f"-DRBDVBT_DECODER_ROOT={decoder_root}", commands[0])
+
     def test_explicit_generic_x11_and_native_tests(self):
         commands = self.run_build(TARGET_CPU="generic", WITH_X11="1", RUN_TESTS="1")
         self.assertIn("-DRBDVBT_TARGET_CPU=generic", commands[0])
         self.assertIn("-DRBDVBT_WITH_X11=ON", commands[0])
         self.assertEqual(Path(commands[2][0]).name, "ctest")
         self.assertIn("--output-on-failure", commands[2])
+        self.assertNotIn("--test-dir", commands[2])
+        self.assertEqual((self.root / "commands.cwd").read_text(), self.env["BUILD_DIR"])
 
     def test_invalid_settings_do_not_build(self):
         for setting in ({"TARGET_CPU": "unknown"}, {"JOBS": "0"}, {"JOBS": "-2"}, {"WITH_X11": "yes"}):

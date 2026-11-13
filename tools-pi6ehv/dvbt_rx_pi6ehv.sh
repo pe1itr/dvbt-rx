@@ -9,6 +9,7 @@ repo_dir="$(CDPATH= cd -- "${script_dir}/.." && pwd)"
 build_dir="${BUILD_DIR:-${repo_dir}/build}"
 rbdvbt_rx="${RBDVBT_RX:-${build_dir}/rbdvbt_rx}"
 srt_worker="${RBDVBT_SRT:-${build_dir}/rbdvbt_srt}"
+udp_worker="${RBDVBT_UDP:-${build_dir}/rbdvbt_udp}"
 rtl_sdr_bin="${RTL_SDR:-rtl_sdr}"
 ffmpeg_bin="${FFMPEG:-${repo_dir}/../ffmpeg/ffmpeg}"
 
@@ -31,6 +32,8 @@ log_keep="${LOG_KEEP:-10}"
 rxlog="${RXLOG:-${log_dir}/rx_${session}.log}"
 ffmpeglog="${FFMPEGLOG:-}"
 ffmpeglog_help="${FFMPEGLOG:-temporary run log}"
+output_mode="${OUTPUT_MODE:-srt}"
+mpegts_dest="${MPEGTS_DEST:-127.0.0.1:5001}"
 srt_url="${SRT_URL:-srt://44.137.26.85:4001?mode=caller&latency=500000}"
 srt_profile="${SRT_PROFILE:-auto}"
 if [ "${srt_profile}" = "auto" ]; then
@@ -68,7 +71,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0")
 
-Start rtl_sdr -> rbdvbt_rx -> ffmpeg -> SRT.
+Start rtl_sdr -> rbdvbt_rx -> SRT (transcoded) or UDP (complete original TS).
 
 Environment:
   FREQUENCY       RTL-SDR tune frequency in Hz. Default: ${frequency}
@@ -78,7 +81,9 @@ Environment:
   GAIN            RTL-SDR gain. Default: ${gain}
   GI              DVB-T guard interval. Default: ${gi}
   FEC             DVB-T FEC. Default: ${fec}
-  SRT_URL         Destination URL. Default: ${srt_url}
+  OUTPUT_MODE     srt or udp; selects exactly one output. Default: ${output_mode}
+  MPEGTS_DEST     Unicast IPv4:PORT for UDP mode. Default: ${mpegts_dest}
+  SRT_URL         Destination URL for SRT mode. Default: ${srt_url}
   FFMPEG          ffmpeg binary path. Default: ${ffmpeg_bin}
   RTL_SDR         rtl_sdr binary path. Default: rtl_sdr
   RBDVBT_RX       receiver path. Default: ${build_dir}/rbdvbt_rx
@@ -90,6 +95,7 @@ Environment:
   LOG_KEEP        receiver logs to keep in LOG_DIR. Default: ${log_keep}
   RXLOG           receiver log path. Default: ${rxlog}
   FFMPEGLOG       ffmpeg log path. Default: ${ffmpeglog_help}
+  RBDVBT_UDP      UDP relay path. Default: ${udp_worker}
   RBDVBT_SRT      SRT supervisor path. Default: ${srt_worker}
   SRT_PROFILE     auto, generic or odroid-n2; auto detects the N2 board model
   SRT_LOSS_TIMEOUT_MS disconnect after no video payload. Default: ${srt_loss_ms}
@@ -105,7 +111,7 @@ Environment:
   RESTART_DELAY seconds to wait before a watchdog restart. Default: ${restart_delay}
   MAX_RESTARTS maximum watchdog restarts, 0 means unlimited. Default: ${max_restarts}
   GUI             pass --gui to rbdvbt_rx when set to 1. Default: 0
-  UDP_TS          receiver-to-SRT-supervisor UDP TS endpoint. Default: ${udp_ts}
+  UDP_TS          receiver-to-output-supervisor UDP TS endpoint. Default: ${udp_ts}
   UDP_OUT         compatibility alias for UDP_TS
   WAIT_VIDEO_START wait for a clean video start when set to 1. Default: 1
 
@@ -114,6 +120,12 @@ Example:
     tools-pi6ehv/dvbt_rx_pi6ehv.sh
 EOF
 }
+
+case "${output_mode}" in
+    srt) output_worker="${srt_worker}"; output_args=(--url "${srt_url}") ;;
+    udp) output_worker="${udp_worker}"; output_args=(--destination "${mpegts_dest}") ;;
+    *) printf "Unknown OUTPUT_MODE (use srt or udp): %s\n" "${output_mode}" >&2; exit 2 ;;
+esac
 
 case "${1:-}" in
     -h|--help)
@@ -127,19 +139,19 @@ if [ ! -x "${rbdvbt_rx}" ]; then
     printf "Build it first with: tools-pi6ehv/build_odroid_arm64.sh\n" >&2
     exit 1
 fi
-if [ ! -x "${srt_worker}" ]; then
-    printf "SRT supervisor not found: %s\nRebuild with RBDVBT_BUILD_SRT=ON.\n" "${srt_worker}" >&2
+if [ ! -x "${output_worker}" ]; then
+    printf "Output supervisor not found: %s\nRebuild the project first.\n" "${output_worker}" >&2
     exit 1
 fi
 if ! command -v "${rtl_sdr_bin}" >/dev/null 2>&1; then
     printf "rtl_sdr not found: %s\n" "${rtl_sdr_bin}" >&2
     exit 1
 fi
-if ! command -v "${ffmpeg_bin}" >/dev/null 2>&1; then
+if [ "${output_mode}" = "srt" ] && ! command -v "${ffmpeg_bin}" >/dev/null 2>&1; then
     printf "ffmpeg not found: %s\n" "${ffmpeg_bin}" >&2
     exit 1
 fi
-if ! "${ffmpeg_bin}" -hide_banner -protocols 2>/dev/null | awk '$1 == "srt" { found = 1 } END { exit found ? 0 : 1 }'; then
+if [ "${output_mode}" = "srt" ] && ! "${ffmpeg_bin}" -hide_banner -protocols 2>/dev/null | awk '$1 == "srt" { found = 1 } END { exit found ? 0 : 1 }'; then
     printf "ffmpeg has no SRT protocol support: %s\n" "${ffmpeg_bin}" >&2
     printf "Install an ffmpeg build with libsrt support or set FFMPEG=/path/to/ffmpeg-with-srt.\n" >&2
     exit 1
@@ -264,20 +276,28 @@ request_watchdog_stop() {
     return 0
 }
 
-printf "Starting RTL-SDR receiver to SRT\n" >&2
+printf "Starting RTL-SDR receiver, output mode %s\n" "${output_mode}" >&2
 printf "  RF:        %s Hz, sample rate %s, gain %s, device %s\n" "${frequency}" "${sample_rate}" "${gain}" "${device}" >&2
 printf "  DVB-T:     SR %s, GI %s, FEC %s\n" "${symbol_rate}" "${gi}" "${fec}" >&2
-printf "  SRT:       %s\n" "${srt_url}" >&2
+if [ "${output_mode}" = "udp" ]; then
+    printf "  UDP MPEG-TS: %s\n" "${mpegts_dest}" >&2
+else
+    printf "  SRT:       %s\n" "${srt_url}" >&2
+fi
 printf "  SRT profile: %s\n" "${srt_profile}" >&2
 if [ -n "${rx_udp_ts}" ]; then
-    printf "  TS path:   receiver UDP %s -> SRT supervisor\n" "${rx_udp_ts}" >&2
+    printf "  TS path:   receiver UDP %s -> output supervisor\n" "${rx_udp_ts}" >&2
 else
-    printf "  TS path:   receiver stdout -> SRT supervisor FIFO\n" >&2
+    printf "  TS path:   receiver stdout -> output supervisor FIFO\n" >&2
 fi
-printf "  Output:    1920x1080p%s H.264/AAC, %s kbps, preset %s\n" "${srt_fps}" "${srt_bitrate}" "${srt_preset}" >&2
-printf "  SRT gate:  loss=%s ms retry=%s ms\n" "${srt_loss_ms}" "${srt_retry_ms}" >&2
+if [ "${output_mode}" = "srt" ]; then
+    printf "  Output:    1920x1080p%s H.264/AAC, %s kbps, preset %s\n" "${srt_fps}" "${srt_bitrate}" "${srt_preset}" >&2
+else
+    printf "  Output:    complete original MPEG-TS, no transcoding or remuxing\n" >&2
+fi
+printf "  Video gate:  loss=%s ms retry=%s ms\n" "${srt_loss_ms}" "${srt_retry_ms}" >&2
 printf "  RX log:    %s\n" "${rxlog}" >&2
-printf "  SRT log:   %s\n" "${ffmpeglog_help}" >&2
+printf "  Output log:   %s\n" "${ffmpeglog_help}" >&2
 printf "  Status:    %s\n" "${status_json}" >&2
 
 : > "${rxlog}"
@@ -310,21 +330,22 @@ run_pipeline_once() {
         ts_fifo=""
     fi
 
-    srt_args=(
-        --url "${srt_url}"
-        --ffmpeg "${ffmpeg_bin}"
-        --loss-ms "${srt_loss_ms}"
-        --retry-ms "${srt_retry_ms}"
-        --fps "${srt_fps}"
-        --bitrate-kbps "${srt_bitrate}"
-        --preset "${srt_preset}"
-        --video-threads "${srt_video_threads}"
-        --filter-threads "${srt_filter_threads}"
-    )
+    worker_args=("${output_args[@]}" --loss-ms "${srt_loss_ms}")
+    if [ "${output_mode}" = "srt" ]; then
+        worker_args+=(
+            --ffmpeg "${ffmpeg_bin}"
+            --retry-ms "${srt_retry_ms}"
+            --fps "${srt_fps}"
+            --bitrate-kbps "${srt_bitrate}"
+            --preset "${srt_preset}"
+            --video-threads "${srt_video_threads}"
+            --filter-threads "${srt_filter_threads}"
+        )
+    fi
     if [ -n "${rx_udp_ts}" ]; then
-        "${srt_worker}" "${srt_input_args[@]}" "${srt_args[@]}" 2> "${current_ffmpeglog}" &
+        "${output_worker}" "${srt_input_args[@]}" "${worker_args[@]}" 2> "${current_ffmpeglog}" &
     else
-        "${srt_worker}" "${srt_args[@]}" < "${ts_fifo}" 2> "${current_ffmpeglog}" &
+        "${output_worker}" "${worker_args[@]}" < "${ts_fifo}" 2> "${current_ffmpeglog}" &
     fi
     ffmpeg_pid=$!
 

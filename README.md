@@ -166,7 +166,10 @@ INSTALL_DEPS=1 RUN_TESTS=1 tools-pi6ehv/build_odroid_arm64.sh
 ```
 
 Voor volgende builds zijn `INSTALL_DEPS=1` en package-installatie niet nodig.
-De decodercheckout blijft wel nodig. `TARGET_CPU=generic` schakelt de
+De decodercheckout blijft wel nodig. Voor een andere locatie accepteert het
+script `RBDVBT_DECODER_ROOT=/pad/naar/sdr-dvb-pipelines/components/dvbt`
+als omgevingsvariabele; dit overschrijft ook een eerder gecachet pad.
+`TARGET_CPU=generic` schakelt de
 N2-afstemming uit; `WITH_X11=1` bouwt de optionele decoderdiagnostiek mee.
 Rechtstreeks met CMake:
 
@@ -518,6 +521,54 @@ Ontvangstverlies herstart de ontvanger niet meer: de uitgang regelt dit zelf.
 De watchdog bewaakt alleen vastgelopen statusupdates na een eerste lock
 (`STATUS_STALE_TIMEOUT`, standaard 30 s). De oude `LOCK_LOSS_TIMEOUT` en
 `FFMPEG_NO_FRAME_LIMIT` vervallen.
+
+### Headless MPEG-TS naar ATV Mosaic
+
+Kies precies één uitgang met `OUTPUT_MODE=srt` (standaard) of `OUTPUT_MODE=udp`.
+UDP stuurt de **volledige originele ontvangen MPEG-TS onbewerkt** door, inclusief
+alle programma's, video, audio, servicenaam, provider, teletekst, ondertitels,
+PSI/SI en overige data. Er vindt geen transcoding, PID-filtering of remuxing
+plaats. FFmpeg en SRT worden in deze modus niet gestart en zijn niet nodig:
+
+```sh
+OUTPUT_MODE=udp MPEGTS_DEST=127.0.0.1:5001 \
+  tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+Gebruik het IPv4-adres van de mosaiccomputer als deze elders draait, bijvoorbeeld
+`MPEGTS_DEST=192.168.1.20:5001`. Poorten 5001/5002/5003 zijn de geplande
+onafhankelijke ingangen van `atv-mosaic`; de huidige mosaicversie implementeert
+nog geen UDP-ingangen. `UDP_TS` blijft de **interne** route naar de bewaker en
+moet een ander eindpunt zijn dan `MPEGTS_DEST`. Stdout blijft leeg.
+Terugschakelen kan met `OUTPUT_MODE=srt SRT_URL='srt://...'`.
+
+De helper `rbdvbt_udp` groepeert de oorspronkelijke 188-byte TS-pakketten in
+raw UDP-datagrammen van maximaal 1316 bytes, zonder RTP-header. Pakketvolgorde,
+PCR/PTS/DTS, continuity counters en alle ontvangen DVB/ETSI-tabellen blijven
+ongewijzigd. De DVB/ETSI-conformiteit blijft daarmee die van de bronstream;
+`atv-mosaic` verzorgt de verdere verwerking en de uiteindelijke uitgang.
+Deze doorgifte herstelt geen ontbrekende tabellen of ontvangstfouten.
+
+Zonder voortschrijdende videopayload blijft UDP stil. Na `SRT_LOSS_TIMEOUT_MS`
+(standaard 2000 ms, ook gebruikt voor UDP) stopt de doorgifte, ook als nog
+PSI, audio of nullpakketten binnenkomen. Nieuwe videopayload hervat automatisch;
+SDR en ontvanger blijven draaien. TEI, gescrambelde video en herhaalde
+continuity counters houden de uitgang niet open. Dit is payloaddetectie, geen
+controle op succesvol gedecodeerde frames. Er wordt geen vervangend beeld of
+nullstream gemaakt. Voor acquisitie bewaart de helper maximaal 1 seconde/1 MiB
+TS zodat recente brontabellen vóór de eerste video mee kunnen gaan; bij verlies
+worden oude buffers weggegooid. De netwerksocket blokkeert de decoder niet.
+
+Los gebruiken, met MPEG-TS op de interne UDP-ingang (of stdin zonder
+`--udp-input`):
+
+```sh
+./build/rbdvbt_udp --udp-input 127.0.0.1:10000 \
+  --destination 127.0.0.1:5001 --loss-ms 2000
+```
+
+`RBDVBT_UDP=/pad/rbdvbt_udp` kiest een andere helper. Deze POSIX-helper bouwt
+ook met `RBDVBT_BUILD_SRT=OFF` en heeft geen extra bibliotheken nodig.
 
 De bewaker kan ook los bij een al draaiende ontvanger worden gestart.
 Geef de ontvanger daarvoor `--udp-ts 127.0.0.1:10000` mee en start:

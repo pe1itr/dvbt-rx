@@ -52,6 +52,12 @@ if(RBDVBT_WITH_X11)
 endif()
 pkg_check_modules(FFTW3F REQUIRED fftw3f)
 
+if(UNIX)
+    add_executable(rbdvbt_udp tools/rbdvbt_udp.c)
+    target_compile_options(rbdvbt_udp PRIVATE -Wall -Wextra -Wpedantic)
+    install(TARGETS rbdvbt_udp RUNTIME DESTINATION bin)
+endif()
+
 # Use exactly the same video gate and Full HD encoder as linrad_dvb.
 option(RBDVBT_BUILD_SRT "Build the headless linrad_dvb SRT supervisor" ${UNIX})
 if(RBDVBT_BUILD_SRT)
@@ -200,6 +206,9 @@ include(CTest)
 if(BUILD_TESTING AND UNIX)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(NAME odroid_build COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_odroid_build.py")
+    add_test(NAME udp_output COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_udp_output.py" $<TARGET_FILE:rbdvbt_udp>)
+    set_tests_properties(udp_output PROPERTIES TIMEOUT 30)
 endif()
 if(BUILD_TESTING AND TARGET rbdvbt_srt AND EXISTS "${RBDVBT_PIPELINES_ROOT}/tests/test_srt_output.py")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)

@@ -5,12 +5,23 @@ Odroid/WebSDR repeatercomputer.
 
 ## Build op de Odroid
 
-Clone de repository op de Odroid en bouw de receiver:
+Clone beide repositories naast elkaar op de Odroid en bouw de receiver:
 
 ```sh
 git clone <repo-url> dvbt-rx
 cd dvbt-rx
+git clone https://github.com/pe1itr/sdr-dvb-pipelines.git ../sdr-dvb-pipelines
 INSTALL_DEPS=1 RUN_TESTS=1 tools-pi6ehv/build_odroid_arm64.sh
+```
+
+De decoderbron en SRT-bewaker komen uit `sdr-dvb-pipelines`; het buildscript
+downloadt die niet automatisch. Bij `DVB-T component not found` ontbreekt
+deze checkout of verwijst de CMake-cache naar een ander pad. Staat de checkout
+elders, geef dan het componentpad expliciet mee:
+
+```sh
+RBDVBT_DECODER_ROOT=/pad/naar/sdr-dvb-pipelines/components/dvbt \
+  tools-pi6ehv/build_odroid_arm64.sh
 ```
 
 Voor een normale rebuild zonder package-installatie:
@@ -28,6 +39,9 @@ ook op ARM64 een build zonder N2-afstemming.
 
 Opties: `JOBS=N`, `WITH_X11=1` voor decoderdiagnostiek en `RUN_TESTS=1` voor
 CTest na de build. Python 3 hoort bij de testafhankelijkheden. De tests
+zijn ook los te starten met `(cd build && ctest --output-on-failure)`;
+dit werkt ook met oudere CTest-versies zonder `--test-dir`.
+De tests
 gebruiken geen SDR-hardware. Op ARM64 wordt ook de upstream NEON-kerneltest
 gebouwd en uitgevoerd; streamingtests draaien met SIMD, geforceerd scalar en
 een build zonder expliciete SIMD. NEON zelf zat al in de gedeelde decoder.
@@ -71,6 +85,23 @@ wanneer de `updated_unix` timestamp meer dan 10 seconden oud is.
 ```sh
 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
+
+Kies UDP MPEG-TS in plaats van SRT voor een toekomstige ATV Mosaic-ingang:
+
+```sh
+OUTPUT_MODE=udp MPEGTS_DEST=127.0.0.1:5001 \
+  tools-pi6ehv/dvbt_rx_pi6ehv.sh
+```
+
+`OUTPUT_MODE=srt` is standaard; de twee uitgangen zijn exclusief. UDP stuurt
+de volledige originele TS onbewerkt door, inclusief audio, servicenaam,
+provider, teletekst en alle overige PIDs. FFmpeg en SRT zijn hiervoor niet nodig.
+`MPEGTS_DEST` is het externe unicast IPv4:PORT; `UDP_TS` blijft de interne
+receiver-bewakerverbinding. Gebruik verschillende eindpunten. Na
+`SRT_LOSS_TIMEOUT_MS` (standaard 2000 ms) zonder voortschrijdende videopayload
+stopt de UDP-uitgang; nieuwe video hervat deze automatisch. SDR en ontvanger
+blijven draaien. `atv-mosaic` verzorgt de verdere verwerking; de bron bepaalt
+de DVB/ETSI-tabellen. Zie de hoofd-README voor details en los helpergebruik.
 
 Belangrijke defaults:
 

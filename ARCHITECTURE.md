@@ -146,7 +146,7 @@ filterkwaliteit, kleinere acquisitiezoekruimte of gevoeligheidsclaim. Een
 native duurtest met tegelijk actieve SRT moet CPU, temperatuur, IQ-overruns,
 FEC-queuedrops en TS/RS-resultaten vastleggen.
 
-## Headless SRT-uitgang
+## Headless SRT- of UDP-uitgang
 
 De PI6EHV-launcher houdt RTL-SDR en `rbdvbt_rx` actief tijdens ontvangstverlies:
 
@@ -176,6 +176,24 @@ en optionele AAC stereo 48 kHz/128 kbit/s. Alleen fps, bitrate, preset en
 threadpools zijn configureerbaar, gelijk aan `linrad_dvb`. De launcherwatchdog
 bewaakt vastgelopen statusupdates na eerste lock; signaalverlies herstart geen
 hardware of decoder meer.
+
+`OUTPUT_MODE=srt|udp` kiest exclusief de externe uitgang. UDP gebruikt de
+lokale POSIX-helper `rbdvbt_udp` zonder FFmpeg/SRT-afhankelijkheid. Deze stuurt
+alle oorspronkelijke TS-pakketten bytegetrouw en in dezelfde volgorde door;
+audio, PSI/SI, service/provider, teletekst en private PIDs worden niet gefilterd.
+Alleen UDP-pakketgroepering verandert (maximaal zeven TS-pakketten/datagram).
+De bron bepaalt DVB/ETSI-conformiteit; mosaic verzorgt de verdere verwerking.
+De interne `UDP_TS`-route blijft onafhankelijk en ondersteunt ook stdout/FIFO.
+
+De UDP-helper synchroniseert op drie 188-byte TS-pakketten en bewaart tijdens
+acquisitie maximaal één seconde/circa 1 MiB aan oorspronkelijke pakketten om
+recente brontabellen mee te nemen bij de eerste voortschrijdende video-PES.
+Video opent de doorgifte; TEI, scrambled payload, audio, PSI, nullpakketten of
+herhaalde video-CC houden die niet open. Bij de monotone verliesdeadline
+(`SRT_LOSS_TIMEOUT_MS`, standaard 2000 ms) stopt UDP en worden oude buffers
+gewist. Nieuwe video hervat zonder hardwareherstart. De helper genereert of
+herhaalt geen TS. Nonblocking UDP houdt netwerkproblemen buiten de decoder.
+Loopbacktests controleren bytebehoud van alle PIDs, stilte en hervatting.
 
 ## Decoder en verificatie
 
