@@ -116,7 +116,7 @@ GI:          1/32
 FEC:         2/3
 Status JSON: /var/www/html/dvb/dvbt-rx-status.json
 Output:      UDP MPEG-TS naar 127.0.0.1:5001
-Loglevel:    quiet
+Loglevel:    info
 AFC:         aan
 ```
 
@@ -194,13 +194,17 @@ De bewaker is ook los te starten bij een al draaiende decoder met UDP-uitgang:
   --ffmpeg ../ffmpeg/ffmpeg
 ```
 
-SRT/FFmpeg stderr wordt tijdelijk gelogd onder `/tmp` en bij cleanup verwijderd.
+Receiver- en output-/FFmpeg-diagnostiek worden ook naar stderr gekopieerd,
+zodat ze bij de user-service in het journal verschijnen. SRT/FFmpeg stderr
+wordt daarnaast tijdelijk gelogd onder `/tmp` en bij cleanup verwijderd.
+Elke receiver- en outputlogregel krijgt een tijdstempel met tijdzone en een
+bronlabel (`[receiver]` of `[output]`), ook in de logbestanden.
 Zet `FFMPEGLOG=/pad/naar/ffmpeg.log` om die log te bewaren.
 
-Voor tijdelijke diagnose kan het receiver-loglevel worden verhoogd:
+Het receiver-loglevel is standaard `info`. Voor uitgebreide diagnose:
 
 ```sh
-LOGLEVEL=info tools-pi6ehv/dvbt_rx_pi6ehv.sh
+LOGLEVEL=debug tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
 Receiverlogs worden in `logs/` bewaard, maar het script houdt standaard alleen
@@ -238,6 +242,10 @@ Het bestand `dvbt-rx.service` is bedoeld voor een user-service en gaat uit van
 een clone in `~/dvbt-rx`.
 De service start niet wanneer `nicam-rx.service` actief is, omdat beide services
 dezelfde RTL-SDR ontvanger gebruiken.
+Het script schrijft receiver-, output- en RTL-SDR-diagnostiek naar stderr,
+dat bij de user-service normaal in het journal verschijnt. Het standaard
+receiver-loglevel is `info`; met `LOGLEVEL=quiet` kunnen normale
+receiverdiagnostieken worden onderdrukt.
 
 ```sh
 mkdir -p ~/.config/systemd/user
@@ -252,3 +260,16 @@ Status en logs:
 systemctl --user status dvbt-rx.service
 journalctl --user -u dvbt-rx.service -f
 ```
+
+Bij een bestaande installatie: behoud het servicebestand op de server, omdat
+dit lokale wijzigingen kan bevatten. De logging zit in het startscript;
+na het bijwerken van dat script volstaat een herstart, zonder unitwijziging
+of `daemon-reload`:
+
+```sh
+systemctl --user restart dvbt-rx.service
+```
+
+Als het journal daarna nog leeg blijft, controleer de bestaande configuratie met
+`systemctl --user cat dvbt-rx.service`: een expliciete `LOGLEVEL=quiet` of
+omleiding van stderr in de service kan de scriptinstellingen overrulen.

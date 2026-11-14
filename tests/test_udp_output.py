@@ -134,6 +134,7 @@ class UdpTests(unittest.TestCase):
             data = b"".join(packet(256, i, video=True) for i in range(7))
             decoder.write_text(f"#!{sys.executable}\n"
                 "import os,socket,sys,time\n"
+                "print('decoder diagnostic', file=sys.stderr, flush=True)\n"
                 "s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n"
                 f"data={data!r}\n"
                 "time.sleep(0.15)\n"
@@ -150,16 +151,28 @@ class UdpTests(unittest.TestCase):
             env = {**os.environ, "OUTPUT_MODE": "udp", "MPEGTS_DEST": f"127.0.0.1:{output.getsockname()[1]}",
                    "RBDVBT_UDP": str(WORKER), "RBDVBT_SRT": "/nonexistent/srt", "FFMPEG": "/nonexistent/ffmpeg",
                    "RBDVBT_RX": str(decoder), "RTL_SDR": str(rtl), "LOG_DIR": str(root),
+                   "RXLOG": str(root / "rx.log"), "FFMPEGLOG": str(root / "output.log"),
                    "UDP_TS": f"127.0.0.1:{port}" if transport == "udp" else "off",
                    "WATCHDOG_ENABLED": "0", "WATCHDOG_INTERVAL": "0.05", "SRT_LOSS_TIMEOUT_MS": "150"}
             with (root / "launcher.log").open("w+") as log:
                 p = subprocess.Popen([ROOT / "tools-pi6ehv/dvbt_rx_pi6ehv.sh"], env=env,
-                                     stdout=subprocess.DEVNULL, stderr=log)
+                                     stdout=subprocess.PIPE, stderr=log)
                 self.addCleanup(stop, p)
                 self.assertEqual(self.collect(output, len(data)), data, (root / "launcher.log").read_text())
                 self.assertEqual(select.select([output], [], [], 0.4)[0], [])
                 self.assertIsNone(p.poll())
+                wait_for(lambda: "decoder diagnostic" in (root / "launcher.log").read_text()
+                         and "Video lost" in (root / "launcher.log").read_text())
+                self.assertIn("decoder diagnostic", (root / "rx.log").read_text())
+                self.assertIn("Video lost", (root / "output.log").read_text())
+                timestamp = r"\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}\]"
+                self.assertRegex((root / "rx.log").read_text(),
+                                 timestamp + r" \[receiver\] decoder diagnostic")
+                self.assertRegex((root / "launcher.log").read_text(),
+                                 timestamp + r" \[output\].*Video lost")
                 stop(p)
+                self.assertEqual(p.stdout.read(), b"")
+                p.stdout.close()
 
 
 if __name__ == "__main__":

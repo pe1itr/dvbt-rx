@@ -109,7 +109,7 @@ class ReceiverSrtTests(shared.SrtTests):
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                     sock.bind(("127.0.0.1", 0))
                     endpoint = f"127.0.0.1:{sock.getsockname()[1]}"
-                env = {**os.environ, "RTL_SDR": str(rtl), "RBDVBT_RX": str(decoder),
+                env = {**os.environ, "OUTPUT_MODE": "srt", "RTL_SDR": str(rtl), "RBDVBT_RX": str(decoder),
                        "RBDVBT_SRT": str(WORKER), "FFMPEG": str(ffmpeg),
                        "LOG_DIR": str(root), "STATUS_JSON": str(root / "status.json"),
                        "FFMPEGLOG": str(root / "srt.log"), "UDP_TS": endpoint if transport == "udp" else "off",

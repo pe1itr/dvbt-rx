@@ -586,6 +586,25 @@ De losse webpagina `tools-pi6ehv/dvbt-rx-status.html` leest die JSON via
 `dvb/dvbt-rx-status.json`. Plaats de pagina op de webroot van de Odroid,
 bijvoorbeeld als `/var/www/html/dvbt-rx-status.html`.
 
+Het PI6EHV-startscript stuurt receiver-, output- en RTL-SDR-diagnostiek naar
+stderr, dat bij de user-service normaal in het journal verschijnt:
+
+```sh
+journalctl --user -u dvbt-rx.service -f
+```
+
+Elke receiver- en outputlogregel krijgt een tijdstempel met tijdzone en een
+bronlabel (`[receiver]` of `[output]`). Het startscript bewaart
+receiverdiagnostiek daarnaast in `logs/rx_*.log` en
+output-/FFmpeg-diagnostiek tijdelijk onder `/tmp`; met `FFMPEGLOG=/pad/output.log`
+blijft dat laatste log bewaard. Rechtstreeks starten van het script gebruikt
+standaard `LOGLEVEL=info`; gebruik `LOGLEVEL=quiet` voor minder receiverdiagnostiek.
+De logging zit in het startscript: werk dit bij en herstart de bestaande
+service met `systemctl --user restart dvbt-rx.service`. Een unitwijziging of
+`daemon-reload` is hiervoor niet nodig. Behoud het servicebestand op de server,
+omdat dit lokale wijzigingen kan bevatten. Een expliciete `LOGLEVEL` of
+stderr-omleiding in die service blijft van toepassing.
+
 ### Decoderdiagnostiek via X11
 
 Met `--gui` toont de ontvanger live X11-vensters voor de belangrijkste

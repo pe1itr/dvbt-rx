@@ -25,7 +25,7 @@ probe_symbols="${PROBE_SYMBOLS:-64}"
 afc="${AFC:-1}"
 input_format="${INPUT_FORMAT:-u8}"
 status_json="${STATUS_JSON:-/var/www/html/dvb/dvbt-rx-status.json}"
-loglevel="${LOGLEVEL:-quiet}"
+loglevel="${LOGLEVEL:-info}"
 session="${SESSION:-$(date +%Y%m%d_%H%M%S)}"
 log_dir="${LOG_DIR:-${repo_dir}/logs}"
 log_keep="${LOG_KEEP:-10}"
@@ -239,6 +239,15 @@ json_uint() {
     sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p" "${file}" 2>/dev/null | tail -n 1
 }
 
+log_diagnostics() {
+    local log_file="$1"
+    local source="$2"
+    awk -v source="${source}" '{
+        print strftime("[%Y-%m-%dT%H:%M:%S%z]"), source, $0
+        fflush()
+    }' | tee -a "${log_file}" >&2
+}
+
 cleanup() {
     trap - INT TERM EXIT
     if [ -n "${rtl_pid:-}" ]; then
@@ -297,6 +306,7 @@ else
 fi
 printf "  Video gate:  loss=%s ms retry=%s ms\n" "${srt_loss_ms}" "${srt_retry_ms}" >&2
 printf "  RX log:    %s\n" "${rxlog}" >&2
+printf "  Log level: %s\n" "${loglevel}" >&2
 printf "  Output log:   %s\n" "${ffmpeglog_help}" >&2
 printf "  Status:    %s\n" "${status_json}" >&2
 
@@ -319,7 +329,8 @@ run_pipeline_once() {
     fi
 
     printf "[pipeline] attempt=%s ffmpeg_log=%s\n" "${attempt}" "${current_ffmpeglog}" >&2
-    printf "[pipeline] attempt=%s start\n" "${attempt}" >> "${rxlog}"
+    printf '[%(%Y-%m-%dT%H:%M:%S%z)T] [pipeline] attempt=%s start\n' -1 "${attempt}" >> "${rxlog}"
+    : > "${current_ffmpeglog}"
 
     iq_fifo="${run_dir}/iq.u8"
     mkfifo "${iq_fifo}"
@@ -343,9 +354,9 @@ run_pipeline_once() {
         )
     fi
     if [ -n "${rx_udp_ts}" ]; then
-        "${output_worker}" "${srt_input_args[@]}" "${worker_args[@]}" 2> "${current_ffmpeglog}" &
+        "${output_worker}" "${srt_input_args[@]}" "${worker_args[@]}" 2> >(log_diagnostics "${current_ffmpeglog}" '[output]') &
     else
-        "${output_worker}" "${worker_args[@]}" < "${ts_fifo}" 2> "${current_ffmpeglog}" &
+        "${output_worker}" "${worker_args[@]}" < "${ts_fifo}" 2> >(log_diagnostics "${current_ffmpeglog}" '[output]') &
     fi
     ffmpeg_pid=$!
 
@@ -353,9 +364,9 @@ run_pipeline_once() {
     rtl_pid=$!
 
     if [ -n "${rx_udp_ts}" ]; then
-        "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > /dev/null 2>> "${rxlog}" &
+        "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > /dev/null 2> >(log_diagnostics "${rxlog}" '[receiver]') &
     else
-        "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > "${ts_fifo}" 2>> "${rxlog}" &
+        "${rbdvbt_rx}" "${rx_args[@]}" < "${iq_fifo}" > "${ts_fifo}" 2> >(log_diagnostics "${rxlog}" '[receiver]') &
     fi
     rx_pid=$!
 
