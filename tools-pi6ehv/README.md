@@ -86,14 +86,15 @@ wanneer de `updated_unix` timestamp meer dan 10 seconden oud is.
 tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-Kies UDP MPEG-TS in plaats van SRT voor een toekomstige ATV Mosaic-ingang:
+Standaard gaat UDP MPEG-TS naar `127.0.0.1:5001`, ook na een serviceherstart.
+De bestemming kan expliciet worden ingesteld voor een ATV Mosaic-ingang:
 
 ```sh
 OUTPUT_MODE=udp MPEGTS_DEST=127.0.0.1:5001 \
   tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-`OUTPUT_MODE=srt` is standaard; de twee uitgangen zijn exclusief. UDP stuurt
+`OUTPUT_MODE=udp` is standaard; de twee uitgangen zijn exclusief. UDP stuurt
 de volledige originele TS onbewerkt door, inclusief audio, servicenaam,
 provider, teletekst en alle overige PIDs. FFmpeg en SRT zijn hiervoor niet nodig.
 `MPEGTS_DEST` is het externe unicast IPv4:PORT; `UDP_TS` blijft de interne
@@ -114,12 +115,12 @@ Gain:        30
 GI:          1/32
 FEC:         2/3
 Status JSON: /var/www/html/dvb/dvbt-rx-status.json
-SRT:         srt://44.137.26.85:4001?mode=caller&latency=500000
+Output:      UDP MPEG-TS naar 127.0.0.1:5001
 Loglevel:    quiet
 AFC:         aan
 ```
 
-Standaard gebruikt het script de PI6EHV ffmpeg met SRT support naast de repo:
+Met `OUTPUT_MODE=srt` gebruikt het script de PI6EHV ffmpeg met SRT support naast de repo:
 
 ```text
 ../ffmpeg/ffmpeg
@@ -134,10 +135,10 @@ Deze ffmpeg moet SRT ondersteunen. Controleer dat met:
 Voor een andere ffmpeg binary:
 
 ```sh
-FFMPEG=/pad/naar/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
+OUTPUT_MODE=srt FFMPEG=/pad/naar/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-Het startscript gebruikt dezelfde SRT-bewaker als `linrad_dvb`. De route is:
+Met `OUTPUT_MODE=srt` gebruikt het startscript dezelfde SRT-bewaker als `linrad_dvb`. De route is:
 
 ```text
 rbdvbt_rx --udp-ts 127.0.0.1:10000 -> rbdvbt_srt -> ffmpeg -> SRT

@@ -32,7 +32,7 @@ log_keep="${LOG_KEEP:-10}"
 rxlog="${RXLOG:-${log_dir}/rx_${session}.log}"
 ffmpeglog="${FFMPEGLOG:-}"
 ffmpeglog_help="${FFMPEGLOG:-temporary run log}"
-output_mode="${OUTPUT_MODE:-srt}"
+output_mode="${OUTPUT_MODE:-udp}"
 mpegts_dest="${MPEGTS_DEST:-127.0.0.1:5001}"
 srt_url="${SRT_URL:-srt://44.137.26.85:4001?mode=caller&latency=500000}"
 srt_profile="${SRT_PROFILE:-auto}"
@@ -116,7 +116,7 @@ Environment:
   WAIT_VIDEO_START wait for a clean video start when set to 1. Default: 1
 
 Example:
-  SRT_URL='srt://44.137.26.85:4001?mode=caller&latency=500000' \\
+  OUTPUT_MODE=srt SRT_URL='srt://44.137.26.85:4001?mode=caller&latency=500000' \\
     tools-pi6ehv/dvbt_rx_pi6ehv.sh
 EOF
 }

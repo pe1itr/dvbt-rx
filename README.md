@@ -432,13 +432,12 @@ Voor een Odroid of andere Linux ontvanger staat er een opstartscript dat de
 geteste pipeline combineert:
 
 ```text
-rtl_sdr -> rbdvbt_rx -> MPEG-TS UDP :10000 -> rbdvbt_srt -> ffmpeg -> SRT
+rtl_sdr -> rbdvbt_rx -> MPEG-TS UDP :10000 -> rbdvbt_udp -> MPEG-TS UDP 127.0.0.1:5001
 ```
 
 Standaard gebruikt het script `436000000 Hz`, RTL-SDR device `00000001`,
 sample-rate `1010526`, symbolrate `333000`, gain `30`, FEC `2/3`, GI `1/32`
-en stuurt het naar
-`srt://44.137.26.85:4001?mode=caller&latency=500000`:
+en stuurt het volledige originele MPEG-TS via UDP naar `127.0.0.1:5001`:
 
 ```sh
 tools-pi6ehv/dvbt_rx_pi6ehv.sh
@@ -447,7 +446,7 @@ tools-pi6ehv/dvbt_rx_pi6ehv.sh
 De belangrijkste instellingen zijn via environment variabelen aan te passen:
 
 ```sh
-SRT_URL='srt://44.137.26.85:4001?mode=caller&latency=500000' \
+OUTPUT_MODE=srt SRT_URL='srt://44.137.26.85:4001?mode=caller&latency=500000' \
 FREQUENCY=436000000 \
 RTL_DEVICE=00000001 \
 SAMPLERATE=1010526 \
@@ -461,10 +460,10 @@ tools-pi6ehv/dvbt_rx_pi6ehv.sh
 Als ffmpeg niet in `PATH` staat:
 
 ```sh
-FFMPEG=../ffmpeg/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
+OUTPUT_MODE=srt FFMPEG=../ffmpeg/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
-Het script draait standaard headless. `rbdvbt_srt` bouwt rechtstreeks dezelfde
+Het script draait standaard headless. In SRT-modus gebruikt `rbdvbt_srt` rechtstreeks dezelfde
 SRT-bewaker als `linrad_dvb` uit `sdr-dvb-pipelines`; er is geen aparte kopie.
 Zonder video blijft de ontvanger draaien zonder SRT-verbinding. Zodra
 voortschrijdende videopayload binnenkomt, start de bewaker FFmpeg en de
@@ -524,7 +523,7 @@ De watchdog bewaakt alleen vastgelopen statusupdates na een eerste lock
 
 ### Headless MPEG-TS naar ATV Mosaic
 
-Kies precies één uitgang met `OUTPUT_MODE=srt` (standaard) of `OUTPUT_MODE=udp`.
+Kies precies één uitgang met `OUTPUT_MODE=udp` (standaard) of `OUTPUT_MODE=srt`.
 UDP stuurt de **volledige originele ontvangen MPEG-TS onbewerkt** door, inclusief
 alle programma's, video, audio, servicenaam, provider, teletekst, ondertitels,
 PSI/SI en overige data. Er vindt geen transcoding, PID-filtering of remuxing

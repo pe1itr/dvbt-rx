@@ -1,5 +1,5 @@
 [Unit]
-Description=PI6EHV RB-DVB-T RTL-SDR receiver to SRT
+Description=PI6EHV RB-DVB-T RTL-SDR receiver to MPEG-TS UDP
 After=network-online.target
 Wants=network-online.target
 
