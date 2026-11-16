@@ -5,7 +5,7 @@ The project's LICENSE is the unmodified GNU GPL version 3 text. NOTICE applies
 GPL-3.0-only to project-owned code and documentation and identifies the author.
 This includes the Qt GUI, the SRT wrapper and the integration tests.
 
-DECODER-GPL-3.0.txt is an identical copy retained for the external DVB-T decoder.
+DECODER-GPL-3.0.txt is an identical copy retained for the bundled DVB-T decoder.
 Attribution-legacy.txt preserves the previous project license for historical
 versions; it is not an additional condition on the current GPL-licensed code.
 
@@ -23,7 +23,8 @@ Before publishing a binary release:
   alongside the binary download, or use another method allowed by the license.
   A link to a moving branch or to another binary package does not identify the
   exact source. Both components/dvbt and src/srt_output.* / src/process_control.h
-  are external sources needed when their respective programs are included.
+  are bundled under vendor/sdr-dvb-pipelines and are needed when their
+  respective programs are included.
 - Preserve the original copyright and license notices for every bundled Qt,
   FFTW, GLib, RTL-SDR, libusb, VLC, FFmpeg or compiler-runtime component. Include
   any additional component-specific license files and meet its source and

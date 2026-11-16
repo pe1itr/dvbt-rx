@@ -43,6 +43,7 @@ class OdroidBuildTests(unittest.TestCase):
     def test_n2_release_without_gui_or_x11(self):
         commands = self.run_build()
         self.assertIn("-DRBDVBT_TARGET_CPU=odroid-n2", commands[0])
+        self.assertIn(f"-DRBDVBT_DECODER_ROOT={SCRIPT.parents[1] / 'vendor/sdr-dvb-pipelines/components/dvbt'}", commands[0])
         self.assertIn("-DCMAKE_BUILD_TYPE=Release", commands[0])
         self.assertIn("-DRBDVBT_BUILD_GUI=OFF", commands[0])
         self.assertIn("-DRBDVBT_WITH_X11=OFF", commands[0])

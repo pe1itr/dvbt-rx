@@ -1,18 +1,17 @@
 # DVB-T / RTL-SDR
 
-> **Ontwikkelstatus:** De ontwikkeling van deze repository is in principe
-> gestopt. De verdere ontwikkeling vindt plaats in
-> [sdr-dvb-pipelines](https://github.com/pe1itr/sdr-dvb-pipelines).
-
 Een compacte **Qt6-ontvanger voor reduced-bandwidth DVB-T met RTL-SDR**.
 De hoofdvensterindeling volgt `linrad_dvb`: een bedieningsbalk bovenaan,
 waterval en spectrum over de volle breedte, en daaronder constellatie links,
 ontvangststatus in het midden en video rechts.
 
-De **enige DVB-T-decoderbron** is `sdr-dvb-pipelines/components/dvbt`.
-Deze repository bouwt daaruit `rbdvbt_rx` en voegt de RTL-SDR-interface toe.
-Er is geen tweede decoderimplementatie of automatische terugval naar de oude
-broncode. Decoderontwikkeling blijft in `sdr-dvb-pipelines`.
+De DVB-T-decoderbron staat in deze repository onder
+`vendor/sdr-dvb-pipelines/components/dvbt`, samen met de benodigde SRT-bewaker
+en tests. Deze bronnen zijn afkomstig uit
+[sdr-dvb-pipelines](https://github.com/pe1itr/sdr-dvb-pipelines).
+Decoderwijzigingen worden hier meegecommit: op de ODROID volstaat dit project
+pullen en opnieuw bouwen. De meegeleverde versie bevat de correctie voor de
+resamplerhistorie bij live blokovergangen.
 
 De GUI ondersteunt uitsluitend RTL-SDR en DVB-T 2K QPSK. De nominale
 bandbreedtes zijn 35, 40, 125, 150, 250, 333 en 500 kHz. Ook de modes
@@ -21,7 +20,7 @@ IQ-bestanden blijven bruikbaar via de decoder-CLI voor tests.
 
 ## Snel starten
 
-Zorg dat `sdr-dvb-pipelines` naast deze repository staat (zie Installatie):
+Bouw rechtstreeks vanuit deze checkout:
 
 ```sh
 cmake -S . -B build
@@ -109,23 +108,10 @@ Benodigd voor de volledige interface:
 - `rtl_sdr` en toegang tot de RTL-SDR USB-ontvanger.
 - Optioneel libVLC development-bestanden en VLC-plugins voor video/audio in
   het venster; VLC als losse speler werkt ook zonder ingebouwde libVLC.
-- De broncheckout van `sdr-dvb-pipelines`, standaard in de naastliggende map.
-
-Als die checkout nog ontbreekt, voer vanuit deze repository uit:
-
-```sh
-git clone https://github.com/pe1itr/sdr-dvb-pipelines.git ../sdr-dvb-pipelines
-```
-
-Gevalideerde decoderrevisie voor deze ombouw:
-`0f9665321ae70f39e01c8ef84ebdef2b802f89bd`.
-CMake bouwt de aanwezige bronbestanden rechtstreeks; het downloadt of wijzigt
-niets in die checkout. Je hoeft de overige ontvangers of de GTK-interface
-van `sdr-dvb-pipelines` niet te bouwen. Voor reproduceerbare builds gebruik je
-een checkout van die revisie voor de decoder. De SRT-bewaker vereist daarnaast
-`src/srt_output.c` en `src/process_control.h` uit een recente checkout
-met SRT-ondersteuning; latere wijzigingen daarin worden bij een volgende build
-meegenomen.
+De benodigde decoder- en SRT-bronnen zijn meegeleverd; een tweede checkout
+is niet nodig. Herkomst en revisie staan in
+[vendor/sdr-dvb-pipelines/UPSTREAM.md](vendor/sdr-dvb-pipelines/UPSTREAM.md).
+CMake downloadt geen broncode.
 
 Op Debian/Ubuntu zijn de GUI-afhankelijkheden bijvoorbeeld:
 
@@ -137,7 +123,7 @@ ctest --test-dir build --output-on-failure
 ./build/rbdvbt_gui
 ```
 
-Een andere locatie voor de gedeelde decoder:
+Optioneel een externe decoderbron gebruiken:
 
 ```sh
 cmake -S . -B build -DRBDVBT_DECODER_ROOT=/pad/naar/sdr-dvb-pipelines/components/dvbt
@@ -166,7 +152,8 @@ INSTALL_DEPS=1 RUN_TESTS=1 tools-pi6ehv/build_odroid_arm64.sh
 ```
 
 Voor volgende builds zijn `INSTALL_DEPS=1` en package-installatie niet nodig.
-De decodercheckout blijft wel nodig. Voor een andere locatie accepteert het
+Het script gebruikt standaard de meegeleverde decoder, ook wanneer een oude
+CMake-cache naar de naastliggende checkout verwijst. Voor een andere locatie accepteert het
 script `RBDVBT_DECODER_ROOT=/pad/naar/sdr-dvb-pipelines/components/dvbt`
 als omgevingsvariabele; dit overschrijft ook een eerder gecachet pad.
 `TARGET_CPU=generic` schakelt de
@@ -209,7 +196,7 @@ Belangrijkste binaries:
 
 ```text
 build/rbdvbt_gui            Qt6 RTL-SDR interface
-build/rbdvbt_rx             decoder uit sdr-dvb-pipelines
+build/rbdvbt_rx             decoder uit de meegeleverde broncode
 build/rbdvbt_status_watch   terminalmonitor voor status JSON
 build/iq_replay_rate        IQ-bestand realtime naar stdout
 build/dvbt_fec_snr_plot     performancegrafieken
@@ -464,7 +451,7 @@ OUTPUT_MODE=srt FFMPEG=../ffmpeg/ffmpeg tools-pi6ehv/dvbt_rx_pi6ehv.sh
 ```
 
 Het script draait standaard headless. In SRT-modus gebruikt `rbdvbt_srt` rechtstreeks dezelfde
-SRT-bewaker als `linrad_dvb` uit `sdr-dvb-pipelines`; er is geen aparte kopie.
+SRT-bewaker als `linrad_dvb`, meegeleverd onder `vendor/sdr-dvb-pipelines`.
 Zonder video blijft de ontvanger draaien zonder SRT-verbinding. Zodra
 voortschrijdende videopayload binnenkomt, start de bewaker FFmpeg en de
 SRT-caller. Na standaard 2000 ms zonder videopayload stopt FFmpeg en wordt SRT

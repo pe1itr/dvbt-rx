@@ -25,8 +25,7 @@ Environment:
   WITH_X11     Build decoder X11 diagnostics and install headers when set to 1
   RUN_TESTS    Run CTest after building when set to 1. Default: 0
   RBDVBT_DECODER_ROOT
-               Decoder component path. Default: ../sdr-dvb-pipelines/components/dvbt
-               next to this repository (or the existing CMake cache value)
+               Decoder component path. Default: bundled vendor/sdr-dvb-pipelines/components/dvbt
 
 Examples:
   tools-pi6ehv/build_odroid_arm64.sh
@@ -84,10 +83,10 @@ if [ "${clean}" = "1" ]; then
     cmake --build "${build_dir}" --target clean 2>/dev/null || true
 fi
 
-decoder_args=()
-if [ -n "${RBDVBT_DECODER_ROOT:-}" ]; then
-    decoder_args+=("-DRBDVBT_DECODER_ROOT=${RBDVBT_DECODER_ROOT}")
-fi
+# Explicitly select the bundled source even when an old build cache points
+# at a sibling checkout. An environment override remains available.
+decoder_root="${RBDVBT_DECODER_ROOT:-${repo_dir}/vendor/sdr-dvb-pipelines/components/dvbt}"
+decoder_args=("-DRBDVBT_DECODER_ROOT=${decoder_root}")
 
 cmake -S "${repo_dir}" -B "${build_dir}" "${decoder_args[@]}" -DCMAKE_BUILD_TYPE="${build_type}" \
     -DRBDVBT_BUILD_GUI=OFF -DRBDVBT_BUILD_SRT=ON \

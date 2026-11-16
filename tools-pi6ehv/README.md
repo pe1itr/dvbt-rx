@@ -5,30 +5,27 @@ Odroid/WebSDR repeatercomputer.
 
 ## Build op de Odroid
 
-Clone beide repositories naast elkaar op de Odroid en bouw de receiver:
+Clone dit project op de Odroid en bouw de receiver:
 
 ```sh
-git clone <repo-url> dvbt-rx
+git clone https://github.com/pe1itr/dvbt-rx.git
 cd dvbt-rx
-git clone https://github.com/pe1itr/sdr-dvb-pipelines.git ../sdr-dvb-pipelines
 INSTALL_DEPS=1 RUN_TESTS=1 tools-pi6ehv/build_odroid_arm64.sh
 ```
 
-De decoderbron en SRT-bewaker komen uit `sdr-dvb-pipelines`; het buildscript
-downloadt die niet automatisch. Bij `DVB-T component not found` ontbreekt
-deze checkout of verwijst de CMake-cache naar een ander pad. Staat de checkout
-elders, geef dan het componentpad expliciet mee:
+De decoder, SRT-bewaker en tests staan in `vendor/sdr-dvb-pipelines` en komen
+mee met deze repository. Een aparte `sdr-dvb-pipelines`-checkout is niet nodig.
+Voor volgende updates vanuit de `dvbt-rx`-map:
 
 ```sh
-RBDVBT_DECODER_ROOT=/pad/naar/sdr-dvb-pipelines/components/dvbt \
-  tools-pi6ehv/build_odroid_arm64.sh
+git pull --ff-only
+RUN_TESTS=1 tools-pi6ehv/build_odroid_arm64.sh
+systemctl --user restart dvbt-rx.service
 ```
 
-Voor een normale rebuild zonder package-installatie:
-
-```sh
-tools-pi6ehv/build_odroid_arm64.sh
-```
+Het buildscript kiest standaard de meegeleverde decoder, ook als een bestaande
+CMake-cache nog naar een naastliggende checkout verwijst. Een expliciete
+`RBDVBT_DECODER_ROOT=/pad/naar/components/dvbt` blijft mogelijk voor ontwikkeling.
 
 De build kiest `Release`, twee parallelle taken en geen Qt6/X11. Op ARM64
 wordt de decoder afgestemd op de N2 A73/A53-cores met `-march=armv8-a` en

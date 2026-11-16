@@ -11,11 +11,16 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(RBDVBT_DECODER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../sdr-dvb-pipelines/components/dvbt"
-    CACHE PATH "Canonical DVB-T component from sdr-dvb-pipelines")
+set(RBDVBT_BUNDLED_DECODER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sdr-dvb-pipelines/components/dvbt")
+# Migrate existing builds that cached the former sibling-checkout default.
+if(RBDVBT_DECODER_ROOT STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/../sdr-dvb-pipelines/components/dvbt")
+    set(RBDVBT_DECODER_ROOT "${RBDVBT_BUNDLED_DECODER_ROOT}" CACHE PATH "DVB-T component source" FORCE)
+endif()
+set(RBDVBT_DECODER_ROOT "${RBDVBT_BUNDLED_DECODER_ROOT}"
+    CACHE PATH "DVB-T component source (bundled by default)")
 get_filename_component(RBDVBT_DECODER_ROOT "${RBDVBT_DECODER_ROOT}" ABSOLUTE)
 if(NOT EXISTS "${RBDVBT_DECODER_ROOT}/include/viterbi_neon.h")
-    message(FATAL_ERROR "DVB-T component not found. Checkout sdr-dvb-pipelines next to this project, or set -DRBDVBT_DECODER_ROOT=/path/to/sdr-dvb-pipelines/components/dvbt. See README.md.")
+    message(FATAL_ERROR "DVB-T component not found. Restore vendor/sdr-dvb-pipelines, or set -DRBDVBT_DECODER_ROOT=/path/to/components/dvbt. See README.md.")
 endif()
 message(STATUS "DVB-T decoder source: ${RBDVBT_DECODER_ROOT}")
 set(RBDVBT_TARGET_CPU "generic" CACHE STRING "CPU tuning: generic or odroid-n2")
@@ -67,7 +72,7 @@ if(RBDVBT_BUILD_SRT)
     get_filename_component(RBDVBT_PIPELINES_ROOT "${RBDVBT_DECODER_ROOT}/../.." ABSOLUTE)
     foreach(source srt_output.c srt_output.h process_control.h)
         if(NOT EXISTS "${RBDVBT_PIPELINES_ROOT}/src/${source}")
-            message(FATAL_ERROR "SRT supervisor source not found: ${RBDVBT_PIPELINES_ROOT}/src/${source}. Update sdr-dvb-pipelines or configure -DRBDVBT_BUILD_SRT=OFF.")
+            message(FATAL_ERROR "SRT supervisor source not found: ${RBDVBT_PIPELINES_ROOT}/src/${source}. Restore the bundled sources or configure -DRBDVBT_BUILD_SRT=OFF.")
         endif()
     endforeach()
     pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0)
@@ -218,7 +223,7 @@ if(BUILD_TESTING AND TARGET rbdvbt_srt AND EXISTS "${RBDVBT_PIPELINES_ROOT}/test
     set_tests_properties(srt_output PROPERTIES TIMEOUT 60)
 endif()
 if(BUILD_TESTING)
-    # Exercise the same upstream sources; never copy tests or decoder code here.
+    # Exercise the tests shipped with the selected decoder component.
     get_filename_component(RBDVBT_PIPELINES_ROOT "${RBDVBT_DECODER_ROOT}/../.." ABSOLUTE)
     foreach(check stream stream_scalar_only psi frontend)
         set(test_kind ${check})

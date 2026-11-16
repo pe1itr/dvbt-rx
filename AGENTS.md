@@ -1,13 +1,17 @@
 # Agent Instructions
 
 This repository contains the Qt6 RTL-SDR interface and builds `rbdvbt_rx`
-from the sole decoder source in `sdr-dvb-pipelines/components/dvbt`.
+from the bundled decoder source in `vendor/sdr-dvb-pipelines/components/dvbt`.
 Keep changes practical and close to the existing C/C++ and CMake style.
 
 ## Project Shape
 
-- GUI code lives in `gui/`. Decoder sources and headers live in the external
-  component selected by `RBDVBT_DECODER_ROOT`; do not create a local decoder fork.
+- GUI code lives in `gui/`. Decoder sources and headers are tracked under
+  `vendor/sdr-dvb-pipelines/components/dvbt`. Include decoder fixes in this
+  repository so a pull and rebuild on the ODROID deploys them.
+- `vendor/sdr-dvb-pipelines/UPSTREAM.md` records source provenance. Keep syncs
+  with linrad_dvb explicit; do not silently refresh vendored files during builds.
+  `RBDVBT_DECODER_ROOT` remains an optional external source override.
 - Small helper programs live in `tools/`.
 - User-facing documentation is `README.md`; implementation notes and pipeline
   design live in `ARCHITECTURE.md`.
@@ -36,8 +40,8 @@ The project expects:
 - FFTW3 single precision development package (`fftw3f`)
 - Optional X11 development headers/libraries for GUI support
 - Qt6 Widgets/Network/Test for the interface and tests; optional libVLC for video
-- A checkout of `sdr-dvb-pipelines` next to this repository (or an explicit
-  `RBDVBT_DECODER_ROOT`). No network fetch occurs during configuration.
+- Decoder and SRT sources are bundled. No sibling checkout or network fetch
+  is required during configuration.
 
 Run `ctest --test-dir build --output-on-failure` for GUI/process tests and the
 available upstream decoder tests. Tests use localhost UDP but no SDR hardware.

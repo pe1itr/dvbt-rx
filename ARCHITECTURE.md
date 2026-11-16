@@ -6,9 +6,17 @@ Dit project levert een compacte Qt6-interface voor DVB-T-ontvangst met RTL-SDR.
 De hoofdvensterindeling volgt `linrad_dvb` uit `sdr-dvb-pipelines`:
 bedieningsbalk bovenaan, daaronder een brede waterval en spectrum, en onderaan
 constellatie, ontvangststatus en video naast elkaar.
-De enige decoderbron is `sdr-dvb-pipelines/components/dvbt`. CMake bouwt die
-bronnen rechtstreeks; DSP en FEC worden alleen in die gedeelde component
-ontwikkeld. De checkout is nodig tijdens het bouwen, maar niet bij ontvangst.
+De standaarddecoderbron staat in
+`vendor/sdr-dvb-pipelines/components/dvbt`. Decoder, SRT-bewaker en benodigde
+tests zijn als broncode in deze repository opgenomen. Zo bevat één Git-update
+op de ODROID ook de decoderwijzigingen. Herkomst en basisrevisie staan in
+`vendor/sdr-dvb-pipelines/UPSTREAM.md`. CMake bouwt deze bestanden rechtstreeks;
+`RBDVBT_DECODER_ROOT` kan voor ontwikkeling een externe component aanwijzen.
+Het ODROID-script kiest expliciet de lokale bron om oude CMake-caches te
+overschrijven. De decoder bewaart tweemaal de FIR-radius aan invoerhistorie,
+zodat uitgestelde resamplersamples ook na een blokovergang volledige linker
+filterondersteuning hebben; de streamingtest vergelijkt hele en gesplitste
+invoer bij 250k en 333k.
 
 ```text
 Qt6 interface
@@ -155,7 +163,7 @@ rtl_sdr -> rbdvbt_rx -> MPEG-TS UDP -> rbdvbt_srt -> FFmpeg -> SRT caller
 ```
 
 CMake bouwt `rbdvbt_srt` met `src/srt_output.c` uit dezelfde geselecteerde
-`sdr-dvb-pipelines`-checkout als de decoder. Deze module is ook de bewaker in
+meegeleverde bronboom als de decoder (`vendor/sdr-dvb-pipelines`). Deze module is ook de bewaker in
 `linrad_dvb`; de lokale `tools/rbdvbt_srt.c` past alleen een optionele IPv4
 UDP-ingang aan naar stdin. De checkout is bij runtime niet nodig. Deze
 POSIX-helper gebruikt GLib zonder GTK/Qt of scherm en wordt op Linux standaard
@@ -203,7 +211,7 @@ volledige demodulatieketen. Wanneer TS naar stdout gaat, bevat stdout alleen
 MPEG-TS; diagnostiek hoort op stderr of in een expliciet statusbestand.
 
 `ctest --test-dir build --output-on-failure` bouwt de beschikbare gedeelde
-streaming-Viterbi-, PSI- en frontendtests rechtstreeks uit de decodercheckout en
+streaming-Viterbi-, PSI- en frontendtests rechtstreeks uit de geselecteerde decoderbron en
 test de interface met gecontroleerde subprocessen en localhost UDP. Deze tests
 hebben geen RTL-SDR-hardware nodig. Een live RF-praktijktest en een nieuwe
 native Windows-build zijn aanvullend nodig voor de betreffende doelmachines.

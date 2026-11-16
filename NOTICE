@@ -24,10 +24,11 @@ granted for versions distributed under that license.
 
 Shared decoder and SRT supervisor
 --------------------------------
-rbdvbt_rx is compiled directly from components/dvbt in:
+rbdvbt_rx and rbdvbt_srt compile the source subset tracked under
+vendor/sdr-dvb-pipelines in this repository. Its source and revision are
+recorded in vendor/sdr-dvb-pipelines/UPSTREAM.md; upstream is:
   https://github.com/pe1itr/sdr-dvb-pipelines
-rbdvbt_srt compiles src/srt_output.c and uses src/srt_output.h and
-src/process_control.h from that same checkout. These components are licensed
+These components are licensed
 under GPL-3.0-only. Their upstream copyright and license notices remain in force.
 licenses/DECODER-GPL-3.0.txt retains a copy of the upstream GPL text.
 
