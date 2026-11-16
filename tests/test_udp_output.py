@@ -75,6 +75,7 @@ class UdpTests(unittest.TestCase):
                 log = logpath.open("w+")
                 self.addCleanup(log.close)
                 p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
+                self.addCleanup(p.stdout.close)
                 self.addCleanup(stop, p)
                 wait_for(lambda: "Waiting for video" in logpath.read_text())
                 sender = self.receiver()
@@ -157,6 +158,7 @@ class UdpTests(unittest.TestCase):
             with (root / "launcher.log").open("w+") as log:
                 p = subprocess.Popen([ROOT / "tools-pi6ehv/dvbt_rx_pi6ehv.sh"], env=env,
                                      stdout=subprocess.PIPE, stderr=log)
+                self.addCleanup(p.stdout.close)
                 self.addCleanup(stop, p)
                 self.assertEqual(self.collect(output, len(data)), data, (root / "launcher.log").read_text())
                 self.assertEqual(select.select([output], [], [], 0.4)[0], [])

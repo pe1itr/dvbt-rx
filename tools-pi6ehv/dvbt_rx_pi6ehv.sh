@@ -242,10 +242,12 @@ json_uint() {
 log_diagnostics() {
     local log_file="$1"
     local source="$2"
-    awk -v source="${source}" '{
-        print strftime("[%Y-%m-%dT%H:%M:%S%z]"), source, $0
-        fflush()
-    }' | tee -a "${log_file}" >&2
+    local line
+    # Read each diagnostic immediately; some awk implementations buffer pipe
+    # input even when fflush() is used on their output.
+    while IFS= read -r line || [ -n "${line}" ]; do
+        printf '[%(%Y-%m-%dT%H:%M:%S%z)T] %s %s\n' -1 "${source}" "${line}"
+    done | tee -a "${log_file}" >&2
 }
 
 cleanup() {
