@@ -7,7 +7,9 @@
 
 static uint8_t viterbi_neon_exp0[64*4], viterbi_neon_exp1[64*4];
 
-static void viterbi_neon_init(const uint8_t expected[64][2])
+/* Match the mutable table type: adding const to nested arrays is not an
+ * implicit pointer conversion in C11. The initializer only reads the table. */
+static void viterbi_neon_init(uint8_t expected[64][2])
 {
     for (unsigned s=0; s<64; ++s) {
         for (unsigned b=0; b<4; ++b) {

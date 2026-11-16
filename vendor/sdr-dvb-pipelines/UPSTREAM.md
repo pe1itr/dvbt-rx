@@ -6,6 +6,9 @@ It contains the DVB-T component, SRT supervisor, their licenses and the tests
 used by this repository. Other upstream receivers and the GTK application
 are not included.
 
+Local changes include a C11-compatible NEON table initializer parameter to
+avoid nested-array qualifier warnings on the ODROID compiler.
+
 These files are tracked in dvbt-rx so a normal git pull and local rebuild on
 the ODROID includes decoder fixes without updating a second repository.
 Make decoder changes here as part of the same dvbt-rx commit. When syncing
