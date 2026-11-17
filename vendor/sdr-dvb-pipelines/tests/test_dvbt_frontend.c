@@ -231,8 +231,23 @@ static void check_iq_ring_overrun_between_reads(void)
     live_iq_ring.eof = 0;
 }
 
+static void check_iq_ring_stall_headroom(void)
+{
+    /* PI6EHV at 250 kHz: changing from 128 to 64 symbols used to halve
+     * the buffer to 1.89 s. Both must absorb the same four-second pause. */
+    const uint32_t rate = 1010526;
+    size_t short_cap = live_iq_ring_capacity(478068, rate);
+    size_t long_cap = live_iq_ring_capacity(956135, rate);
+    assert(short_cap == long_cap);
+    assert(short_cap / (double)rate >= 4.0);
+    /* Narrow modes still need room for all four, longer frontend blocks. */
+    assert(live_iq_ring_capacity(4000000, rate) >= 16000000);
+    assert(live_iq_ring_capacity(1, 0) >= 4097);
+}
+
 int main(void)
 {
+    check_iq_ring_stall_headroom();
     check_iq_ring_overrun_between_reads();
     check_carrier_layout();
     rbdvbt_dvbt_2k_model_init();

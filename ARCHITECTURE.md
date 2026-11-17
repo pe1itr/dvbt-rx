@@ -116,6 +116,16 @@ het geheugenverbruik van gelijktijdige decodercompilaties te beperken.
 Er zijn geen fast-math, alternatieve filtercoëfficiënten, threadaffiniteit of
 extra FEC-workers toegevoegd.
 
+De live IQ-ring gebruikt vier frontendblokken met een ondergrens van vier
+seconden op de ingangssample-rate. De ondergrens voorkomt dat kleinere
+OFDM-blokken ook de tolerantie voor acquisitie- of schedulingpauzes halveren.
+De ring blijft bij overrun de oudste samples weggooien en meldt de breuk aan
+de bestaande resampler/frontend-resetlogica. Dit verhelpt geen aanhoudende
+overbelasting. Health-logregels behouden de cumulatieve `iq_drops` en voegen
+`iq_drop_delta` toe sinds de vorige health-melding. De demodulatielog toont
+ook de minimale pilot-lock met blokindex en het aantal symbolen onder 0,70;
+de bestaande beslissingen blijven gebaseerd op dezelfde locklogica.
+
 De SRT-launcher herkent het N2-boardmodel en kiest daar het bestaande upstream
 encoderprofiel `ultrafast`, drie video- en één filterthread. Expliciete
 instellingen blijven leidend; op andere computers blijven de algemene defaults

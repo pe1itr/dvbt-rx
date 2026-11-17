@@ -7,7 +7,10 @@ used by this repository. Other upstream receivers and the GTK application
 are not included.
 
 Local changes include a C11-compatible NEON table initializer parameter to
-avoid nested-array qualifier warnings on the ODROID compiler.
+avoid nested-array qualifier warnings on the ODROID compiler, a four-second
+minimum live IQ buffer, interval IQ-loss counters and per-symbol pilot-lock
+diagnostics with buffer-headroom regression coverage. These changes do not
+refresh the upstream revision above.
 
 These files are tracked in dvbt-rx so a normal git pull and local rebuild on
 the ODROID includes decoder fixes without updating a second repository.

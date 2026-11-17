@@ -179,6 +179,15 @@ Met `LOGLEVEL=info` is `kernel=neon-float` zichtbaar wanneer Viterbi actief word
 Een native N2-duurtest blijft nodig om de totale belasting inclusief
 1080p-encoding, temperatuur en eventuele IQ/FEC-verliezen te beoordelen.
 
+De live IQ-buffer bewaart minimaal vier seconden ingangssamples, ook bij
+`LIVE_SYMBOLS=64`. Dit vangt tijdelijke verwerkingspauzes op; blijvende
+overbelasting kan nog steeds samples verliezen. In `[health]` is `iq_drops`
+het totaal sinds de start en `iq_drop_delta` het verlies sinds de vorige
+health-melding. `[dvbt2k]` toont naast de gemiddelde pilot-lock ook
+`min_pilot_lock`, `min_pilot_symbol` (index vanaf nul binnen het uitgegeven
+symboolblok) en `weak_pilot_symbols` (pilot-lock onder 0,70). Zo wordt een
+korte verstoring zichtbaar die in een hoog blokgemiddelde verborgen blijft.
+
 Video in het venster gebruikt libVLC op Windows of Linux/X11. Op een
 Wayland-desktop kan de GUI via XWayland draaien:
 
