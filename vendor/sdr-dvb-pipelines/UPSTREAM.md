@@ -12,6 +12,9 @@ minimum live IQ buffer, interval IQ-loss counters and per-symbol pilot-lock
 diagnostics with buffer-headroom regression coverage. These changes do not
 refresh the upstream revision above.
 
+The payload pilot-phase estimator also has a guarded robust fallback for
+sequential phase-unwrapping slips, with an independent damaged-pilot test.
+
 These files are tracked in dvbt-rx so a normal git pull and local rebuild on
 the ODROID includes decoder fixes without updating a second repository.
 Make decoder changes here as part of the same dvbt-rx commit. When syncing

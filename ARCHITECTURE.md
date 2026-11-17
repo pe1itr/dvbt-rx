@@ -126,6 +126,18 @@ overbelasting. Health-logregels behouden de cumulatieve `iq_drops` en voegen
 ook de minimale pilot-lock met blokindex en het aantal symbolen onder 0,70;
 de bestaande beslissingen blijven gebaseerd op dezelfde locklogica.
 
+Een afzonderlijke payload-fallback voorkomt dat één afwijkende pilot bij het
+opeenvolgend uitpakken van fasehoeken een 2π-sprong door de resterende pilots
+propageert. De regressietest reproduceert daarmee een lock van circa 0,20
+terwijl de overige draaggolven intact zijn. Alleen bij pilot-lock onder 0,70
+probeert de payloadfaseberekening een mediaan van lokale faseslopes, gevolgd
+door twee fits van circulaire residuen met uitsluiting van antipodale pilots.
+De kandidaat wordt alleen gebruikt als minstens 75% van de pilots in de fit
+past en de lock over alle pilots verbetert tot minstens 0,70. Acquisitiescans
+gebruiken de oorspronkelijke schatting. `phase_repairs` telt de geaccepteerde
+herstellingen per demodulatieblok. Dit reproduceerbare foutmechanisme is nog
+geen bewijs dat alle N2-verliezen dezelfde oorzaak hebben.
+
 De SRT-launcher herkent het N2-boardmodel en kiest daar het bestaande upstream
 encoderprofiel `ultrafast`, drie video- en één filterthread. Expliciete
 instellingen blijven leidend; op andere computers blijven de algemene defaults

@@ -245,8 +245,80 @@ static void check_iq_ring_stall_headroom(void)
     assert(live_iq_ring_capacity(1, 0) >= 4097);
 }
 
+static void check_pilot_phase_outlier(void)
+{
+    /* One almost-antipodal pilot makes sequential unwrapping carry a 2*pi
+     * error through the remaining carriers, although all data are intact. */
+    complexf_t shifted[FFT];
+    for (unsigned phase = 0; phase < 4; ++phase) {
+        for (int conjugate = 0; conjugate < 2; ++conjugate) {
+            memset(shifted, 0, sizeof(shifted));
+            int damaged = 0;
+            for (unsigned k = 0; k < RBDVBT_DVBT_2K_ACTIVE_CARRIERS; ++k) {
+                rbdvbt_dvbt_carrier_role_t role = rbdvbt_dvbt_2k_carrier_role(phase, k);
+                if (role != RBDVBT_DVBT_CARRIER_CONTINUAL_PILOT &&
+                    role != RBDVBT_DVBT_CARRIER_SCATTERED_PILOT) continue;
+                double angle = 3.1 + 0.001 * ((int)k - 852);
+                if (!damaged && k >= 840) {
+                    angle += M_PI - 0.005;
+                    damaged = 1;
+                }
+                int sign = rbdvbt_dvbt_2k_pilot_sign(k);
+                int bin = (int)rbdvbt_dvbt_2k_logical_to_fft_bin(k) - 44;
+                shifted[bin].re = (float)(sign * cos(angle));
+                shifted[bin].im = (float)(sign * sin(angle) * (conjugate ? -1 : 1));
+            }
+            double intercept, slope, lock;
+            uint32_t pilots;
+            int repaired;
+            assert(!estimate_dvbt2k_pilot_phase(shifted, phase, -44, conjugate,
+                &intercept, &slope, &lock, &pilots));
+            assert(lock < 0.3); /* Reproduce the observed ~0.20 lock collapse. */
+            assert(!estimate_dvbt2k_payload_phase(shifted, phase, -44, conjugate,
+                &intercept, &slope, &lock, &pilots, &repaired));
+            assert(repaired);
+            assert(lock > 0.98);
+            /* Verify the rotation that data carriers would actually receive. */
+            for (unsigned k = 0; k < RBDVBT_DVBT_2K_ACTIVE_CARRIERS; ++k) {
+                double x = (int)k - 852;
+                double error = 3.1 + 0.001*x - (intercept + slope*x);
+                assert(fabs(atan2(sin(error), cos(error))) < 0.001);
+            }
+        }
+    }
+}
+
+static void check_pilot_phase_fallback_guard(void)
+{
+    complexf_t shifted[FFT];
+    uint32_t rng = 78123;
+    for (unsigned noise = 0; noise < 2; ++noise) {
+        memset(shifted, 0, sizeof(shifted));
+        for (unsigned k = 0; k < RBDVBT_DVBT_2K_ACTIVE_CARRIERS; ++k) {
+            rng = 1664525u * rng + 1013904223u;
+            double angle = noise ? 2*M_PI*(double)rng/UINT32_MAX : 0.2 + 0.001*((int)k-852);
+            int sign = rbdvbt_dvbt_2k_pilot_sign(k);
+            unsigned bin = rbdvbt_dvbt_2k_logical_to_fft_bin(k);
+            shifted[bin].re = (float)(sign*cos(angle));
+            shifted[bin].im = (float)(sign*sin(angle));
+        }
+        double a, b, lock, recovered_a, recovered_b, recovered_lock;
+        uint32_t pilots, recovered_pilots;
+        int repaired;
+        assert(!estimate_dvbt2k_pilot_phase(shifted, 0, 0, 0, &a, &b, &lock, &pilots));
+        assert(!estimate_dvbt2k_payload_phase(shifted, 0, 0, 0,
+            &recovered_a, &recovered_b, &recovered_lock, &recovered_pilots, &repaired));
+        /* Preserve a good original fit and reject incoherent noise alike. */
+        assert(!repaired && a == recovered_a && b == recovered_b && lock == recovered_lock);
+        assert(pilots == recovered_pilots);
+        assert(noise ? lock < 0.7 : lock > 0.99999);
+    }
+}
+
 int main(void)
 {
+    check_pilot_phase_outlier();
+    check_pilot_phase_fallback_guard();
     check_iq_ring_stall_headroom();
     check_iq_ring_overrun_between_reads();
     check_carrier_layout();

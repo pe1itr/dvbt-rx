@@ -187,6 +187,10 @@ health-melding. `[dvbt2k]` toont naast de gemiddelde pilot-lock ook
 `min_pilot_lock`, `min_pilot_symbol` (index vanaf nul binnen het uitgegeven
 symboolblok) en `weak_pilot_symbols` (pilot-lock onder 0,70). Zo wordt een
 korte verstoring zichtbaar die in een hoog blokgemiddelde verborgen blijft.
+`phase_repairs` telt symbolen waarvoor de ontvanger een slechte pilotfase-fit
+kon herstellen. Bij een zwakke fit probeert hij een robuuste schatting die
+een afwijkende pilot niet door de overige draaggolven laat doorwerken.
+Dit herstelt fasefouten; ontbrekende IQ-samples blijven verloren.
 
 Video in het venster gebruikt libVLC op Windows of Linux/X11. Op een
 Wayland-desktop kan de GUI via XWayland draaien:
